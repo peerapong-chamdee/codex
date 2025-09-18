@@ -7,8 +7,48 @@ use std::path::Path;
 use std::thread;
 use toml::Value as TomlValue;
 
+#[cfg(all(test, target_os = "macos"))]
+use std::sync::Mutex;
+#[cfg(all(test, target_os = "macos"))]
+use std::sync::OnceLock;
+
 const CONFIG_TOML_FILE: &str = "config.toml";
 const CONFIG_OVERRIDE_TOML_FILE: &str = "config_override.toml";
+
+#[derive(Debug)]
+pub(crate) struct LoadedConfigLayers {
+    pub base: TomlValue,
+    pub override_layer: Option<TomlValue>,
+    pub managed_layer: Option<TomlValue>,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+static TEST_MANAGED_PREFERENCES_OVERRIDE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+#[cfg(all(test, target_os = "macos"))]
+fn test_managed_preferences_override_storage() -> &'static Mutex<Option<String>> {
+    TEST_MANAGED_PREFERENCES_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn test_managed_preferences_override() -> Option<String> {
+    lock_test_managed_preferences_override_storage().clone()
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn replace_test_managed_preferences_override(value: Option<String>) -> Option<String> {
+    let mut guard = lock_test_managed_preferences_override_storage();
+    std::mem::replace(&mut *guard, value)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn lock_test_managed_preferences_override_storage() -> std::sync::MutexGuard<'static, Option<String>>
+{
+    match test_managed_preferences_override_storage().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 // Configuration layering pipeline (top overrides bottom):
 //
@@ -29,6 +69,20 @@ const CONFIG_OVERRIDE_TOML_FILE: &str = "config_override.toml";
 // (*) Only available on macOS via managed device profiles.
 
 pub fn load_config_as_toml(codex_home: &Path) -> io::Result<TomlValue> {
+    let LoadedConfigLayers {
+        mut base,
+        override_layer,
+        managed_layer,
+    } = load_config_layers(codex_home)?;
+
+    for overlay in [override_layer, managed_layer].into_iter().flatten() {
+        merge_toml_values(&mut base, &overlay);
+    }
+
+    Ok(base)
+}
+
+pub(crate) fn load_config_layers(codex_home: &Path) -> io::Result<LoadedConfigLayers> {
     let user_config_path = codex_home.join(CONFIG_TOML_FILE);
     let override_config_path = codex_home.join(CONFIG_OVERRIDE_TOML_FILE);
 
@@ -42,13 +96,11 @@ pub fn load_config_as_toml(codex_home: &Path) -> io::Result<TomlValue> {
         let override_config = join_config_result(override_handle, "config_override.toml")?;
         let managed_config = join_config_result(managed_handle, "managed preferences")?;
 
-        let mut merged = user_config.unwrap_or_else(default_empty_table);
-
-        for overlay in [override_config, managed_config].into_iter().flatten() {
-            merge_toml_values(&mut merged, &overlay);
-        }
-
-        Ok(merged)
+        Ok(LoadedConfigLayers {
+            base: user_config.unwrap_or_else(default_empty_table),
+            override_layer: override_config,
+            managed_layer: managed_config,
+        })
     })
 }
 
@@ -101,7 +153,7 @@ fn read_config_from_path(path: &Path, log_missing_as_info: bool) -> io::Result<O
     }
 }
 
-fn merge_toml_values(base: &mut TomlValue, overlay: &TomlValue) {
+pub(crate) fn merge_toml_values(base: &mut TomlValue, overlay: &TomlValue) {
     if let TomlValue::Table(overlay_table) = overlay
         && let TomlValue::Table(base_table) = base
     {
@@ -131,7 +183,7 @@ fn load_managed_admin_config_impl() -> io::Result<Option<TomlValue>> {
 
     #[cfg(test)]
     {
-        if let Ok(encoded) = std::env::var("CODEX_TEST_MANAGED_PREFERENCES_BASE64") {
+        if let Some(encoded) = test_managed_preferences_override() {
             let trimmed = encoded.trim();
             if trimmed.is_empty() {
                 return Ok(None);
@@ -206,39 +258,34 @@ mod tests {
     use tempfile::tempdir;
 
     #[cfg(target_os = "macos")]
-    const MANAGED_ENV: &str = "CODEX_TEST_MANAGED_PREFERENCES_BASE64";
-
-    #[cfg(target_os = "macos")]
-    use base64::Engine as _;
-
-    #[cfg(target_os = "macos")]
-    struct ManagedEnvGuard {
+    struct ManagedPreferencesOverrideGuard {
         previous: Option<String>,
     }
 
     #[cfg(target_os = "macos")]
-    impl ManagedEnvGuard {
+    impl ManagedPreferencesOverrideGuard {
+        fn clear() -> Self {
+            Self::set("")
+        }
+
         fn set(value: &str) -> Self {
-            let previous = std::env::var(MANAGED_ENV).ok();
-            std::env::set_var(MANAGED_ENV, value);
+            let previous =
+                super::replace_test_managed_preferences_override(Some(value.to_string()));
             Self { previous }
         }
     }
 
     #[cfg(target_os = "macos")]
-    impl Drop for ManagedEnvGuard {
+    impl Drop for ManagedPreferencesOverrideGuard {
         fn drop(&mut self) {
-            match &self.previous {
-                Some(prev) => std::env::set_var(MANAGED_ENV, prev),
-                None => std::env::remove_var(MANAGED_ENV),
-            }
+            super::replace_test_managed_preferences_override(self.previous.clone());
         }
     }
 
     #[test]
     fn merges_override_layer_on_top() {
         #[cfg(target_os = "macos")]
-        let _guard = ManagedEnvGuard::set("");
+        let _guard = ManagedPreferencesOverrideGuard::clear();
 
         let tmp = tempdir().expect("tempdir");
         std::fs::write(
@@ -279,7 +326,7 @@ extra = true
     #[test]
     fn returns_empty_when_all_layers_missing() {
         #[cfg(target_os = "macos")]
-        let _guard = ManagedEnvGuard::set("");
+        let _guard = ManagedPreferencesOverrideGuard::clear();
 
         let tmp = tempdir().expect("tempdir");
         let loaded = load_config_as_toml(tmp.path()).expect("load config");
@@ -293,14 +340,13 @@ extra = true
     #[cfg(target_os = "macos")]
     #[test]
     fn managed_preferences_take_highest_precedence() {
-        let _guard = ManagedEnvGuard::set("");
         let managed_payload = r#"
 [nested]
 value = "managed"
 flag = false
 "#;
         let encoded = super::BASE64_STANDARD.encode(managed_payload.as_bytes());
-        std::env::set_var(MANAGED_ENV, encoded);
+        let _guard = ManagedPreferencesOverrideGuard::set(&encoded);
 
         let tmp = tempdir().expect("tempdir");
         std::fs::write(
