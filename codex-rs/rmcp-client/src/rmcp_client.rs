@@ -92,7 +92,7 @@ struct OAuthRuntimeInner {
     server_name: String,
     url: String,
     scopes: Vec<String>,
-    manager: Arc<Mutex<AuthorizationManager>>,
+    authorization_manager: Arc<Mutex<AuthorizationManager>>,
     last_serialized: Mutex<Option<String>>,
 }
 
@@ -109,7 +109,7 @@ impl OAuthRuntime {
                 server_name,
                 url,
                 scopes,
-                manager,
+                authorization_manager: manager,
                 last_serialized: Mutex::new(initial_serialized),
             }),
         }
@@ -117,7 +117,7 @@ impl OAuthRuntime {
 
     async fn persist_if_needed(&self) -> Result<()> {
         let (client_id, maybe_credentials) = {
-            let manager = self.inner.manager.clone();
+            let manager = self.inner.authorization_manager.clone();
             let guard = manager.lock().await;
             guard.get_credentials().await
         }?;
@@ -132,21 +132,21 @@ impl OAuthRuntime {
                     token_response: credentials.clone(),
                 };
                 let serialized = serde_json::to_string(&stored)?;
-                let mut cache = self.inner.last_serialized.lock().await;
-                if cache.as_deref() != Some(serialized.as_str()) {
+                let mut last_serialized = self.inner.last_serialized.lock().await;
+                if last_serialized.as_deref() != Some(serialized.as_str()) {
                     save_tokens(&self.inner.server_name, &stored)?;
-                    *cache = Some(serialized);
+                    *last_serialized = Some(serialized);
                 }
             }
             None => {
-                let mut cache = self.inner.last_serialized.lock().await;
-                if cache.take().is_some() {
-                    if let Err(error) = delete_tokens(&self.inner.server_name) {
-                        warn!(
-                            "failed to remove OAuth tokens for server {}: {error}",
-                            self.inner.server_name
-                        );
-                    }
+                let mut last_serialized = self.inner.last_serialized.lock().await;
+                if last_serialized.take().is_some()
+                    && let Err(error) = delete_tokens(&self.inner.server_name)
+                {
+                    warn!(
+                        "failed to remove OAuth tokens for server {}: {error}",
+                        self.inner.server_name
+                    );
                 }
             }
         }
@@ -286,10 +286,10 @@ impl RmcpClient {
             };
         }
 
-        if let Some(runtime) = oauth_runtime {
-            if let Err(error) = runtime.persist_if_needed().await {
-                warn!("failed to persist OAuth tokens after initialize: {error}");
-            }
+        if let Some(runtime) = oauth_runtime
+            && let Err(error) = runtime.persist_if_needed().await
+        {
+            warn!("failed to persist OAuth tokens after initialize: {error}");
         }
 
         Ok(initialize_result)
@@ -348,10 +348,10 @@ impl RmcpClient {
     }
 
     async fn persist_oauth_tokens(&self) {
-        if let Some(runtime) = self.oauth_runtime().await {
-            if let Err(error) = runtime.persist_if_needed().await {
-                warn!("failed to persist OAuth tokens: {error}");
-            }
+        if let Some(runtime) = self.oauth_runtime().await
+            && let Err(error) = runtime.persist_if_needed().await
+        {
+            warn!("failed to persist OAuth tokens: {error}");
         }
     }
 }

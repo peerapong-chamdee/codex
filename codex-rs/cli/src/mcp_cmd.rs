@@ -630,10 +630,15 @@ async fn perform_oauth_login(server_name: &str, server_url: &str) -> Result<()> 
         .context("timed out waiting for OAuth callback")?
         .context("OAuth callback was cancelled")?;
 
-    oauth_state.handle_callback(&code, &csrf_state).await?;
-    oauth_state.complete_authorization().await?;
+    oauth_state
+        .handle_callback(&code, &csrf_state)
+        .await
+        .context("failed to handle OAuth callback")?;
 
-    let (client_id, credentials_opt) = oauth_state.get_credentials().await?;
+    let (client_id, credentials_opt) = oauth_state
+        .get_credentials()
+        .await
+        .context("failed to retrieve OAuth credentials")?;
     let credentials =
         credentials_opt.ok_or_else(|| anyhow!("OAuth provider did not return credentials"))?;
 
