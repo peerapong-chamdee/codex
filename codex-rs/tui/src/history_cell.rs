@@ -1,4 +1,5 @@
 use crate::diff_render::create_diff_summary;
+use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::OutputLinesParams;
 use crate::exec_cell::TOOL_CALL_MAX_LINES;
@@ -31,6 +32,7 @@ use image::DynamicImage;
 use image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
 use mcp_types::ResourceLink;
+use pathdiff::diff_paths;
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -1046,6 +1048,17 @@ pub(crate) fn new_proposed_command(command: &[String]) -> PlainHistoryCell {
         initial_prefix,
         subsequent_prefix,
     ));
+
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistoryCell {
+    let display_path = display_path_for(&path, cwd);
+
+    let lines: Vec<Line<'static>> = vec![
+        vec!["• ".dim(), "Viewed Image".bold()].into(),
+        vec!["  └ ".dim(), display_path.dim()].into(),
+    ];
 
     PlainHistoryCell { lines }
 }
