@@ -1167,10 +1167,23 @@ pub struct GetHistoryEntryResponseEvent {
 }
 
 /// Response payload for `Op::ListMcpTools`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpOAuthStatus {
+    Unsupported,
+    LoggedOut,
+    LoginRequired,
+    LoggedIn,
+    Error { message: String },
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct McpListToolsResponseEvent {
     /// Fully qualified tool name -> tool definition.
     pub tools: std::collections::HashMap<String, McpTool>,
+    /// OAuth status for each server, keyed by server name.
+    #[serde(default)]
+    pub oauth_status: std::collections::HashMap<String, McpOAuthStatus>,
 }
 
 /// Response payload for `Op::ListCustomPrompts`.

@@ -16,9 +16,15 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_mcp_client::McpClient;
+use codex_protocol::protocol::McpOAuthStatus;
+use codex_rmcp_client::OAuthClientConfig as RmcpOAuthClientConfig;
 use codex_rmcp_client::RmcpClient;
+use codex_rmcp_client::StreamableHttpClientConfig;
+use codex_rmcp_client::default_oauth_scopes;
+use codex_rmcp_client::load_oauth_tokens;
 use mcp_types::ClientCapabilities;
 use mcp_types::Implementation;
+use mcp_types::InitializeResult;
 use mcp_types::Tool;
 
 use serde_json::json;
@@ -81,6 +87,16 @@ fn qualify_tools(tools: Vec<ToolInfo>) -> HashMap<String, ToolInfo> {
     qualified_tools
 }
 
+fn server_supports_oauth(result: &InitializeResult) -> bool {
+    result
+        .capabilities
+        .experimental
+        .as_ref()
+        .and_then(|value| value.as_object())
+        .and_then(|obj| obj.get("authorization"))
+        .is_some()
+}
+
 struct ToolInfo {
     server_name: String,
     tool_name: String,
@@ -123,14 +139,13 @@ impl McpClientAdapter {
     }
 
     async fn new_streamable_http_client(
-        url: String,
-        bearer_token: Option<String>,
+        config: StreamableHttpClientConfig,
         params: mcp_types::InitializeRequestParams,
         startup_timeout: Duration,
-    ) -> Result<Self> {
-        let client = Arc::new(RmcpClient::new_streamable_http_client(url, bearer_token)?);
-        client.initialize(params, Some(startup_timeout)).await?;
-        Ok(McpClientAdapter::Rmcp(client))
+    ) -> Result<(Self, InitializeResult)> {
+        let client = Arc::new(RmcpClient::new_streamable_http_client(config).await?);
+        let initialize_result = client.initialize(params, Some(startup_timeout)).await?;
+        Ok((McpClientAdapter::Rmcp(client), initialize_result))
     }
 
     async fn list_tools(
@@ -168,6 +183,9 @@ pub(crate) struct McpConnectionManager {
 
     /// Fully qualified tool name -> tool instance.
     tools: HashMap<String, ToolInfo>,
+
+    /// OAuth status for each configured server.
+    oauth_statuses: HashMap<String, McpOAuthStatus>,
 }
 
 impl McpConnectionManager {
@@ -191,6 +209,7 @@ impl McpConnectionManager {
         // Launch all configured servers concurrently.
         let mut join_set = JoinSet::new();
         let mut errors = ClientStartErrors::new();
+        let mut oauth_statuses: HashMap<String, McpOAuthStatus> = HashMap::new();
 
         for (server_name, cfg) in mcp_servers {
             // Validate server name before spawning
@@ -212,11 +231,24 @@ impl McpConnectionManager {
                     "skipping MCP server `{}` configured with url because rmcp client is disabled",
                     server_name
                 );
+                oauth_statuses.insert(server_name, McpOAuthStatus::Unsupported);
                 continue;
             }
 
             let startup_timeout = cfg.startup_timeout_sec.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
             let tool_timeout = cfg.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT);
+
+            let stored_tokens = match load_oauth_tokens(&server_name) {
+                Ok(tokens) => tokens,
+                Err(err) => {
+                    let message = err.to_string();
+                    warn!(
+                        "failed to read OAuth tokens for server `{server_name}` from keyring: {message}"
+                    );
+                    oauth_statuses.insert(server_name.clone(), McpOAuthStatus::Error { message });
+                    None
+                }
+            };
 
             let use_rmcp_client_flag = use_rmcp_client;
             join_set.spawn(async move {
@@ -242,40 +274,96 @@ impl McpConnectionManager {
                     protocol_version: mcp_types::MCP_SCHEMA_VERSION.to_owned(),
                 };
 
-                let client = match transport {
+                let result: Result<
+                    (ManagedClient, Option<McpOAuthStatus>),
+                    (anyhow::Error, Option<McpOAuthStatus>),
+                > = match transport {
                     McpServerTransportConfig::Stdio { command, args, env } => {
                         let command_os: OsString = command.into();
                         let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
-                        McpClientAdapter::new_stdio_client(
+                        match McpClientAdapter::new_stdio_client(
                             use_rmcp_client_flag,
                             command_os,
                             args_os,
                             env,
-                            params.clone(),
-                            startup_timeout,
-                        )
-                        .await
-                    }
-                    McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
-                        McpClientAdapter::new_streamable_http_client(
-                            url,
-                            bearer_token,
                             params,
                             startup_timeout,
                         )
                         .await
+                        {
+                            Ok(client) => Ok((
+                                ManagedClient {
+                                    client,
+                                    startup_timeout,
+                                    tool_timeout: Some(tool_timeout),
+                                },
+                                None,
+                            )),
+                            Err(err) => Err((err, None)),
+                        }
                     }
-                }
-                .map(|c| (c, startup_timeout));
+                    McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+                        let oauth_tokens = stored_tokens.clone();
+                        let oauth_config =
+                            oauth_tokens.clone().map(|tokens| RmcpOAuthClientConfig {
+                                stored_tokens: Some(tokens),
+                                scopes: default_oauth_scopes(),
+                            });
+                        let stream_config = StreamableHttpClientConfig {
+                            server_name: server_name.clone(),
+                            url,
+                            bearer_token,
+                            oauth: oauth_config,
+                        };
 
-                ((server_name, tool_timeout), client)
+                        match McpClientAdapter::new_streamable_http_client(
+                            stream_config,
+                            params,
+                            startup_timeout,
+                        )
+                        .await
+                        {
+                            Ok((client, init_result)) => {
+                                let mut status = None;
+                                if server_supports_oauth(&init_result) {
+                                    status = Some(if oauth_tokens.is_some() {
+                                        McpOAuthStatus::LoggedIn
+                                    } else {
+                                        McpOAuthStatus::LoggedOut
+                                    });
+                                }
+
+                                Ok((
+                                    ManagedClient {
+                                        client,
+                                        startup_timeout,
+                                        tool_timeout: Some(tool_timeout),
+                                    },
+                                    status,
+                                ))
+                            }
+                            Err(err) => {
+                                let status = if oauth_tokens.is_none() {
+                                    Some(McpOAuthStatus::LoginRequired)
+                                } else {
+                                    Some(McpOAuthStatus::Error {
+                                        message: err.to_string(),
+                                    })
+                                };
+                                Err((err, status))
+                            }
+                        }
+                    }
+                };
+
+                (server_name, result)
             });
         }
 
         let mut clients: HashMap<String, ManagedClient> = HashMap::with_capacity(join_set.len());
 
         while let Some(res) = join_set.join_next().await {
-            let ((server_name, tool_timeout), client_res) = match res {
+            let (server_name, result) = match res {
                 Ok(result) => result,
                 Err(e) => {
                     warn!("Task panic when starting MCP server: {e:#}");
@@ -283,19 +371,22 @@ impl McpConnectionManager {
                 }
             };
 
-            match client_res {
-                Ok((client, startup_timeout)) => {
-                    clients.insert(
-                        server_name,
-                        ManagedClient {
-                            client,
-                            startup_timeout,
-                            tool_timeout: Some(tool_timeout),
-                        },
-                    );
+            match result {
+                Ok((managed_client, status)) => {
+                    if let Some(status) = status {
+                        oauth_statuses.insert(server_name.clone(), status);
+                    } else {
+                        oauth_statuses
+                            .entry(server_name.clone())
+                            .or_insert(McpOAuthStatus::Unsupported);
+                    }
+                    clients.insert(server_name, managed_client);
                 }
-                Err(e) => {
-                    errors.insert(server_name, e);
+                Err((error, status)) => {
+                    if let Some(status) = status {
+                        oauth_statuses.insert(server_name.clone(), status);
+                    }
+                    errors.insert(server_name, error);
                 }
             }
         }
@@ -310,7 +401,14 @@ impl McpConnectionManager {
 
         let tools = qualify_tools(all_tools);
 
-        Ok((Self { clients, tools }, errors))
+        Ok((
+            Self {
+                clients,
+                tools,
+                oauth_statuses,
+            },
+            errors,
+        ))
     }
 
     /// Returns a single map that contains **all** tools. Each key is the
@@ -320,6 +418,10 @@ impl McpConnectionManager {
             .iter()
             .map(|(name, tool)| (name.clone(), tool.tool.clone()))
             .collect()
+    }
+
+    pub fn oauth_statuses(&self) -> HashMap<String, McpOAuthStatus> {
+        self.oauth_statuses.clone()
     }
 
     /// Invoke the tool indicated by the (server, tool) pair.

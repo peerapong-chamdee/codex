@@ -76,7 +76,8 @@ fn list_and_get_render_expected_output() -> Result<()> {
               }
             },
             "startup_timeout_sec": null,
-            "tool_timeout_sec": null
+            "tool_timeout_sec": null,
+            "oauth_status": "not supported"
           }
         ]
         )
@@ -91,6 +92,7 @@ fn list_and_get_render_expected_output() -> Result<()> {
     assert!(stdout.contains("command: docs-server"));
     assert!(stdout.contains("args: --port 4000"));
     assert!(stdout.contains("env: TOKEN=secret"));
+    assert!(stdout.contains("oauth_status: not supported"));
     assert!(stdout.contains("remove: codex mcp remove docs"));
 
     let mut get_json_cmd = codex_command(codex_home.path())?;
