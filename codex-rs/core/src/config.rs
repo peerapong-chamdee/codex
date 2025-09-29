@@ -252,10 +252,14 @@ fn load_layered_config_with_cli_overrides(
         managed_layer,
     } = crate::config_loader::load_config_layers(codex_home)?;
 
+    // Apply CLI overrides immediately so that file-based overrides and managed
+    // preferences still have the opportunity to take precedence over them.
     for (path, value) in cli_overrides.into_iter() {
         apply_toml_override(&mut base, &path, value);
     }
 
+    // Overlay filesystem and managed layers in priority order
+    // (config.toml < config_override.toml < managed preferences).
     for overlay in [override_layer, managed_layer].into_iter().flatten() {
         crate::config_loader::merge_toml_values(&mut base, &overlay);
     }
