@@ -48,14 +48,19 @@ use crate::utils::run_with_timeout;
 pub struct StreamableHttpClientConfig {
     pub server_name: String,
     pub url: String,
-    pub bearer_token: Option<String>,
-    pub oauth: Option<OAuthClientConfig>,
+    pub auth: Option<StreamableHttpAuth>,
 }
 
 #[derive(Debug, Clone)]
 pub struct OAuthClientConfig {
     pub stored_tokens: Option<StoredOAuthTokens>,
     pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum StreamableHttpAuth {
+    BearerToken(Box<String>),
+    Oauth(Box<OAuthClientConfig>),
 }
 
 enum PendingTransport {
@@ -203,21 +208,22 @@ impl RmcpClient {
     pub async fn new_streamable_http_client(
         mut config: StreamableHttpClientConfig,
     ) -> Result<Self> {
-        let oauth = config.oauth.take();
-        let transport = match oauth {
-            Some(oauth_config) => {
-                let (transport, runtime) = create_oauth_transport(&config, oauth_config).await?;
+        let transport = match config.auth.take() {
+            Some(StreamableHttpAuth::Oauth(oauth_config)) => {
+                let (transport, runtime) = create_oauth_transport(&config, *oauth_config).await?;
                 PendingTransport::StreamableHttpWithAuth {
                     transport,
                     oauth: runtime,
                 }
             }
+            Some(StreamableHttpAuth::BearerToken(token)) => {
+                let http_config = StreamableHttpClientTransportConfig::with_uri(config.url.clone())
+                    .auth_header(format!("Bearer {token}"));
+                let transport = StreamableHttpClientTransport::from_config(http_config);
+                PendingTransport::StreamableHttp(transport)
+            }
             None => {
-                let mut http_config =
-                    StreamableHttpClientTransportConfig::with_uri(config.url.clone());
-                if let Some(token) = config.bearer_token {
-                    http_config = http_config.auth_header(format!("Bearer {token}"));
-                }
+                let http_config = StreamableHttpClientTransportConfig::with_uri(config.url.clone());
                 let transport = StreamableHttpClientTransport::from_config(http_config);
                 PendingTransport::StreamableHttp(transport)
             }

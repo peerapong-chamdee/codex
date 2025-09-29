@@ -894,12 +894,12 @@ pub(crate) fn new_mcp_tools_output(
         if let Some(status) = oauth_status.get(server) {
             let status_span = match status {
                 McpOAuthStatus::LoggedIn => "Logged in".green(),
-                McpOAuthStatus::LoginRequired => "Login required".yellow(),
+                McpOAuthStatus::LoginRequired => "Login required".red(),
                 McpOAuthStatus::LoggedOut => "Not logged in".dim(),
                 McpOAuthStatus::Unsupported => "Not supported".dim(),
                 McpOAuthStatus::Error { message } => format!("Error: {message}").red(),
             };
-            lines.push(vec!["    • OAuth: ".into(), status_span.into()].into());
+            lines.push(vec!["    • OAuth: ".into(), status_span].into());
         }
 
         if names.is_empty() {

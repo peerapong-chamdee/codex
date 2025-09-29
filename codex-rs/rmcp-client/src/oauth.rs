@@ -5,7 +5,7 @@ use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
 use serde::Serialize;
 
-const KEYRING_SERVICE: &str = "codex-mcp-oauth";
+const KEYRING_SERVICE: &str = "Codex MCP Credentials";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredOAuthTokens {

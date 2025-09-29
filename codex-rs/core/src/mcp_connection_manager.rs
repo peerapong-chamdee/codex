@@ -19,6 +19,7 @@ use codex_mcp_client::McpClient;
 use codex_protocol::protocol::McpOAuthStatus;
 use codex_rmcp_client::OAuthClientConfig as RmcpOAuthClientConfig;
 use codex_rmcp_client::RmcpClient;
+use codex_rmcp_client::StreamableHttpAuth;
 use codex_rmcp_client::StreamableHttpClientConfig;
 use codex_rmcp_client::default_oauth_scopes;
 use codex_rmcp_client::load_oauth_tokens;
@@ -304,16 +305,18 @@ impl McpConnectionManager {
                     }
                     McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
                         let oauth_tokens = stored_tokens.clone();
-                        let oauth_config =
-                            oauth_tokens.clone().map(|tokens| RmcpOAuthClientConfig {
+                        let auth = if let Some(tokens) = oauth_tokens.clone() {
+                            Some(StreamableHttpAuth::Oauth(Box::new(RmcpOAuthClientConfig {
                                 stored_tokens: Some(tokens),
                                 scopes: default_oauth_scopes(),
-                            });
+                            })))
+                        } else {
+                            bearer_token.map(|t| StreamableHttpAuth::BearerToken(Box::new(t)))
+                        };
                         let stream_config = StreamableHttpClientConfig {
                             server_name: server_name.clone(),
                             url,
-                            bearer_token,
-                            oauth: oauth_config,
+                            auth,
                         };
 
                         match McpClientAdapter::new_streamable_http_client(

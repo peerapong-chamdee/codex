@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::string::String;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -611,7 +612,7 @@ async fn perform_oauth_login(server_name: &str, server_url: &str) -> Result<()> 
     spawn_callback_server(server, tx);
 
     let scopes = default_oauth_scopes();
-    let scope_refs: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
+    let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
 
     let mut oauth_state = OAuthState::new(server_url, None).await?;
     oauth_state
