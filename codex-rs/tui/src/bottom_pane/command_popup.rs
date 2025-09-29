@@ -95,32 +95,10 @@ impl CommandPopup {
     /// Determine the preferred height of the popup for a given width.
     /// Accounts for wrapped descriptions so that long tooltips don't overflow.
     pub(crate) fn calculate_required_height(&self, width: u16) -> u16 {
-        use super::selection_popup_common::GenericDisplayRow;
         use super::selection_popup_common::measure_rows_height;
-        let matches = self.filtered();
-        let rows_all: Vec<GenericDisplayRow> = if matches.is_empty() {
-            Vec::new()
-        } else {
-            matches
-                .into_iter()
-                .map(|(item, indices, _)| match item {
-                    CommandItem::Builtin(cmd) => GenericDisplayRow {
-                        name: format!("/{}", cmd.command()),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some(cmd.description().to_string()),
-                    },
-                    CommandItem::UserPrompt(i) => GenericDisplayRow {
-                        name: format!("/{}", self.prompts[i].name),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some("send saved prompt".to_string()),
-                    },
-                })
-                .collect()
-        };
+        let rows = self.rows_from_matches(self.filtered());
 
-        measure_rows_height(&rows_all, &self.state, MAX_POPUP_ROWS, width)
+        measure_rows_height(&rows, &self.state, MAX_POPUP_ROWS, width)
     }
 
     /// Compute fuzzy-filtered matches over built-in commands and user prompts,
@@ -172,6 +150,32 @@ impl CommandPopup {
         self.filtered().into_iter().map(|(c, _, _)| c).collect()
     }
 
+    fn rows_from_matches(
+        &self,
+        matches: Vec<(CommandItem, Option<Vec<usize>>, i32)>,
+    ) -> Vec<GenericDisplayRow> {
+        matches
+            .into_iter()
+            .map(|(item, indices, _)| {
+                let (name, description) = match item {
+                    CommandItem::Builtin(cmd) => {
+                        (format!("/{}", cmd.command()), cmd.description().to_string())
+                    }
+                    CommandItem::UserPrompt(i) => (
+                        format!("/{}", self.prompts[i].name),
+                        "send saved prompt".to_string(),
+                    ),
+                };
+                GenericDisplayRow {
+                    name,
+                    match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
+                    is_current: false,
+                    description: Some(description),
+                }
+            })
+            .collect()
+    }
+
     /// Move the selection cursor one step up.
     pub(crate) fn move_up(&mut self) {
         let len = self.filtered_items().len();
@@ -198,36 +202,15 @@ impl CommandPopup {
 
 impl WidgetRef for CommandPopup {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        let matches = self.filtered();
-        let rows_all: Vec<GenericDisplayRow> = if matches.is_empty() {
-            Vec::new()
-        } else {
-            matches
-                .into_iter()
-                .map(|(item, indices, _)| match item {
-                    CommandItem::Builtin(cmd) => GenericDisplayRow {
-                        name: format!("/{}", cmd.command()),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some(cmd.description().to_string()),
-                    },
-                    CommandItem::UserPrompt(i) => GenericDisplayRow {
-                        name: format!("/{}", self.prompts[i].name),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some("send saved prompt".to_string()),
-                    },
-                })
-                .collect()
-        };
+        let rows = self.rows_from_matches(self.filtered());
         render_rows(
             area,
             buf,
-            &rows_all,
+            &rows,
             &self.state,
             MAX_POPUP_ROWS,
-            false,
             "no matches",
+            false,
         );
     }
 }
@@ -235,6 +218,7 @@ impl WidgetRef for CommandPopup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::string::ToString;
 
     #[test]
     fn filter_includes_init_when_typing_prefix() {
@@ -292,11 +276,15 @@ mod tests {
                 name: "foo".to_string(),
                 path: "/tmp/foo.md".to_string().into(),
                 content: "hello from foo".to_string(),
+                description: None,
+                argument_hint: None,
             },
             CustomPrompt {
                 name: "bar".to_string(),
                 path: "/tmp/bar.md".to_string().into(),
                 content: "hello from bar".to_string(),
+                description: None,
+                argument_hint: None,
             },
         ];
         let popup = CommandPopup::new(prompts);
@@ -304,7 +292,7 @@ mod tests {
         let mut prompt_names: Vec<String> = items
             .into_iter()
             .filter_map(|it| match it {
-                CommandItem::UserPrompt(i) => popup.prompt_name(i).map(|s| s.to_string()),
+                CommandItem::UserPrompt(i) => popup.prompt_name(i).map(ToString::to_string),
                 _ => None,
             })
             .collect();
@@ -319,6 +307,8 @@ mod tests {
             name: "init".to_string(),
             path: "/tmp/init.md".to_string().into(),
             content: "should be ignored".to_string(),
+            description: None,
+            argument_hint: None,
         }]);
         let items = popup.filtered_items();
         let has_collision_prompt = items.into_iter().any(|it| match it {
