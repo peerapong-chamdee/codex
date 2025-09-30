@@ -15,6 +15,7 @@ use serde_json::map::Map as JsonMap;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -39,6 +40,64 @@ pub struct StoredOAuthTokens {
     pub token_response: WrappedOAuthTokenResponse,
 }
 
+#[derive(Debug)]
+struct CredentialStoreError(anyhow::Error);
+
+impl CredentialStoreError {
+    fn new(error: impl Into<anyhow::Error>) -> Self {
+        Self(error.into())
+    }
+
+    fn message(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        self.0
+    }
+}
+
+impl fmt::Display for CredentialStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for CredentialStoreError {}
+
+trait CredentialStore {
+    fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError>;
+    fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError>;
+    fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError>;
+}
+
+struct KeyringCredentialStore;
+
+impl CredentialStore for KeyringCredentialStore {
+    fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
+        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
+        match entry.get_password() {
+            Ok(password) => Ok(Some(password)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(CredentialStoreError::new(error)),
+        }
+    }
+
+    fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError> {
+        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
+        entry.set_password(value).map_err(CredentialStoreError::new)
+    }
+
+    fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(error) => Err(CredentialStoreError::new(error)),
+        }
+    }
+}
+
 /// Wrap OAuthTokenResponse to allow for partial equality comparison.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WrappedOAuthTokenResponse(pub OAuthTokenResponse);
@@ -53,68 +112,76 @@ impl PartialEq for WrappedOAuthTokenResponse {
 }
 
 pub(crate) fn load_oauth_tokens(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
-    match Entry::new(KEYRING_SERVICE, server_name) {
-        Ok(entry) => match entry.get_password() {
-            Ok(serialized) => {
-                let tokens: StoredOAuthTokens = serde_json::from_str(&serialized)
-                    .context("failed to deserialize OAuth tokens from keyring")?;
-                Ok(Some(tokens))
-            }
-            Err(keyring::Error::NoEntry) => load_oauth_tokens_from_file(server_name, url),
-            Err(err) => {
-                warn!("failed to read OAuth tokens from keyring: {err}");
-                load_oauth_tokens_from_file(server_name, url)
-                    .with_context(|| format!("failed to read OAuth tokens from keyring: {err}"))
-            }
-        },
-        Err(err) => {
-            warn!("failed to access keyring entry for {server_name}: {err}");
+    let store = KeyringCredentialStore;
+    load_oauth_tokens_with_store(&store, server_name, url)
+}
+
+fn load_oauth_tokens_with_store<C: CredentialStore>(
+    store: &C,
+    server_name: &str,
+    url: &str,
+) -> Result<Option<StoredOAuthTokens>> {
+    match store.load(KEYRING_SERVICE, server_name) {
+        Ok(Some(serialized)) => {
+            let tokens: StoredOAuthTokens = serde_json::from_str(&serialized)
+                .context("failed to deserialize OAuth tokens from keyring")?;
+            Ok(Some(tokens))
+        }
+        Ok(None) => load_oauth_tokens_from_file(server_name, url),
+        Err(error) => {
+            let message = error.message();
+            warn!("failed to read OAuth tokens from keyring: {message}");
             load_oauth_tokens_from_file(server_name, url)
-                .with_context(|| format!("failed to access keyring entry for {server_name}: {err}"))
+                .with_context(|| format!("failed to read OAuth tokens from keyring: {message}"))
         }
     }
 }
 
 pub fn save_oauth_tokens(server_name: &str, tokens: &StoredOAuthTokens) -> Result<()> {
+    let store = KeyringCredentialStore;
+    save_oauth_tokens_with_store(&store, server_name, tokens)
+}
+
+fn save_oauth_tokens_with_store<C: CredentialStore>(
+    store: &C,
+    server_name: &str,
+    tokens: &StoredOAuthTokens,
+) -> Result<()> {
     let serialized = serde_json::to_string(tokens).context("failed to serialize OAuth tokens")?;
 
-    match Entry::new(KEYRING_SERVICE, server_name) {
-        Ok(entry) => match entry.set_password(&serialized) {
-            Ok(()) => {
-                // Clean up any fallback entry so the keyring remains the source of truth.
-                if let Err(error) = delete_oauth_tokens_from_file(server_name, Some(&tokens.url)) {
-                    warn!("failed to remove OAuth tokens from fallback storage: {error:?}");
-                }
-                Ok(())
+    match store.save(KEYRING_SERVICE, server_name, &serialized) {
+        Ok(()) => {
+            if let Err(error) = delete_oauth_tokens_from_file(server_name, Some(&tokens.url)) {
+                warn!("failed to remove OAuth tokens from fallback storage: {error:?}");
             }
-            Err(err) => {
-                warn!("failed to write OAuth tokens to keyring: {err:?}");
-                save_oauth_tokens_to_file(tokens)
-                    .with_context(|| format!("failed to write OAuth tokens to keyring: {err}"))
-            }
-        },
-        Err(err) => {
-            warn!("failed to access keyring entry for {server_name}: {err:?}");
+            Ok(())
+        }
+        Err(error) => {
+            let message = error.message();
+            warn!("failed to write OAuth tokens to keyring: {message}");
             save_oauth_tokens_to_file(tokens)
-                .with_context(|| format!("failed to access keyring entry for {server_name}: {err}"))
+                .with_context(|| format!("failed to write OAuth tokens to keyring: {message}"))
         }
     }
 }
 
 pub fn delete_oauth_tokens(server_name: &str) -> Result<bool> {
-    let mut keyring_removed = false;
+    let store = KeyringCredentialStore;
+    delete_oauth_tokens_with_store(&store, server_name)
+}
 
-    match Entry::new(KEYRING_SERVICE, server_name) {
-        Ok(entry) => match entry.delete_credential() {
-            Ok(()) => keyring_removed = true,
-            Err(keyring::Error::NoEntry) => {}
-            Err(err) => {
-                warn!("failed to delete OAuth tokens from keyring: {err:?}");
-                return Err(err).context("failed to delete OAuth tokens from keyring");
-            }
-        },
-        Err(err) => warn!("failed to access keyring entry for {server_name}: {err:?}"),
-    }
+fn delete_oauth_tokens_with_store<C: CredentialStore>(
+    store: &C,
+    server_name: &str,
+) -> Result<bool> {
+    let keyring_removed = match store.delete(KEYRING_SERVICE, server_name) {
+        Ok(removed) => removed,
+        Err(error) => {
+            let message = error.message();
+            warn!("failed to delete OAuth tokens from keyring: {message}");
+            return Err(error.into_error()).context("failed to delete OAuth tokens from keyring");
+        }
+    };
 
     let file_removed = delete_oauth_tokens_from_file(server_name, None)?;
     Ok(keyring_removed || file_removed)
@@ -410,25 +477,292 @@ fn sha_256_prefix(value: &Value) -> Result<String> {
     Ok(truncated.to_string())
 }
 
-// TODO: implement this.
-// fn determine_oauth_status(name: &str, cfg: &McpServerConfig) -> McpOAuthStatus {
-//     match &cfg.transport {
-//         McpServerTransportConfig::Stdio { .. } => McpOAuthStatus::Unsupported,
-//         McpServerTransportConfig::StreamableHttp {
-//             bearer_token: Some(_),
-//             ..
-//         } => McpOAuthStatus::Unsupported,
-//         McpServerTransportConfig::StreamableHttp { url, .. } => {
-//             match load_oauth_tokens(name, url) {
-//                 Ok(Some(_)) => McpOAuthStatus::LoggedIn,
-//                 Ok(None) => McpOAuthStatus::LoggedOut,
-//                 Err(err) => {
-//                     eprintln!("warning: failed to read OAuth credentials for `{name}`: {err}");
-//                     McpOAuthStatus::Error {
-//                         message: err.to_string(),
-//                     }
-//                 }
-//             }
-//         }
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use keyring::Error as KeyringError;
+    use keyring::credential::CredentialApi as _;
+    use keyring::mock::MockCredential;
+    use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::MutexGuard;
+    use std::sync::OnceLock;
+    use std::sync::PoisonError;
+    use tempfile::tempdir;
+
+    #[derive(Default, Clone)]
+    struct MockCredentialStore {
+        credentials: Arc<Mutex<HashMap<String, Arc<MockCredential>>>>,
+    }
+
+    impl MockCredentialStore {
+        fn credential(&self, account: &str) -> Arc<MockCredential> {
+            let mut guard = self.credentials.lock().unwrap();
+            guard
+                .entry(account.to_string())
+                .or_insert_with(|| Arc::new(MockCredential::default()))
+                .clone()
+        }
+
+        fn saved_value(&self, account: &str) -> Option<String> {
+            let credential = {
+                let guard = self.credentials.lock().unwrap();
+                guard.get(account).cloned()
+            }?;
+            credential.get_password().ok()
+        }
+
+        fn set_error(&self, account: &str, error: KeyringError) {
+            let credential = self.credential(account);
+            credential.set_error(error);
+        }
+
+        fn contains(&self, account: &str) -> bool {
+            let guard = self.credentials.lock().unwrap();
+            guard.contains_key(account)
+        }
+    }
+
+    impl CredentialStore for MockCredentialStore {
+        fn load(
+            &self,
+            _service: &str,
+            account: &str,
+        ) -> Result<Option<String>, CredentialStoreError> {
+            let credential = {
+                let guard = self.credentials.lock().unwrap();
+                guard.get(account).cloned()
+            };
+
+            let Some(credential) = credential else {
+                return Ok(None);
+            };
+
+            match credential.get_password() {
+                Ok(password) => Ok(Some(password)),
+                Err(KeyringError::NoEntry) => Ok(None),
+                Err(error) => Err(CredentialStoreError::new(error)),
+            }
+        }
+
+        fn save(
+            &self,
+            _service: &str,
+            account: &str,
+            value: &str,
+        ) -> Result<(), CredentialStoreError> {
+            let credential = self.credential(account);
+            credential
+                .set_password(value)
+                .map_err(CredentialStoreError::new)
+        }
+
+        fn delete(&self, _service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+            let credential = {
+                let guard = self.credentials.lock().unwrap();
+                guard.get(account).cloned()
+            };
+
+            let Some(credential) = credential else {
+                return Ok(false);
+            };
+
+            match credential.delete_credential() {
+                Ok(()) => {
+                    let mut guard = self.credentials.lock().unwrap();
+                    guard.remove(account);
+                    Ok(true)
+                }
+                Err(KeyringError::NoEntry) => {
+                    let mut guard = self.credentials.lock().unwrap();
+                    guard.remove(account);
+                    Ok(false)
+                }
+                Err(error) => Err(CredentialStoreError::new(error)),
+            }
+        }
+    }
+
+    struct TempCodexHome {
+        _guard: MutexGuard<'static, ()>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl TempCodexHome {
+        fn new() -> Self {
+            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let guard = LOCK
+                .get_or_init(Mutex::default)
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let dir = tempdir().expect("create CODEX_HOME temp dir");
+            unsafe {
+                std::env::set_var("CODEX_HOME", dir.path());
+            }
+            Self {
+                _guard: guard,
+                _dir: dir,
+            }
+        }
+    }
+
+    impl Drop for TempCodexHome {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("CODEX_HOME");
+            }
+        }
+    }
+
+    #[test]
+    fn load_oauth_tokens_reads_from_keyring_when_available() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store = MockCredentialStore::default();
+        let tokens = sample_tokens();
+        let expected = tokens.clone();
+        let serialized = serde_json::to_string(&tokens)?;
+        store.save(KEYRING_SERVICE, &tokens.server_name, &serialized)?;
+
+        let loaded = super::load_oauth_tokens_with_store(&store, &tokens.server_name, &tokens.url)?;
+        assert_eq!(loaded, Some(expected));
+        Ok(())
+    }
+
+    #[test]
+    fn load_oauth_tokens_falls_back_when_missing_in_keyring() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store = MockCredentialStore::default();
+        let tokens = sample_tokens();
+        let expected = tokens.clone();
+
+        super::save_oauth_tokens_to_file(&tokens)?;
+
+        let loaded = super::load_oauth_tokens_with_store(&store, &tokens.server_name, &tokens.url)?
+            .expect("tokens should load from fallback");
+        assert_eq!(loaded, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn load_oauth_tokens_falls_back_when_keyring_errors() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store = MockCredentialStore::default();
+        let tokens = sample_tokens();
+        let expected = tokens.clone();
+        store.set_error(
+            &tokens.server_name,
+            KeyringError::Invalid("error".into(), "load".into()),
+        );
+
+        super::save_oauth_tokens_to_file(&tokens)?;
+
+        let loaded = super::load_oauth_tokens_with_store(&store, &tokens.server_name, &tokens.url)?
+            .expect("tokens should load from fallback");
+        assert_eq!(loaded, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn save_oauth_tokens_prefers_keyring_when_available() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store = MockCredentialStore::default();
+        let tokens = sample_tokens();
+
+        super::save_oauth_tokens_to_file(&tokens)?;
+
+        super::save_oauth_tokens_with_store(&store, &tokens.server_name, &tokens)?;
+
+        let fallback_path = super::fallback_file_path()?;
+        assert!(!fallback_path.exists(), "fallback file should be removed");
+        let stored = store
+            .saved_value(&tokens.server_name)
+            .expect("value saved to keyring");
+        assert_eq!(serde_json::from_str::<StoredOAuthTokens>(&stored)?, tokens);
+        Ok(())
+    }
+
+    #[test]
+    fn save_oauth_tokens_writes_fallback_when_keyring_fails() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store = MockCredentialStore::default();
+        let tokens = sample_tokens();
+        store.set_error(
+            &tokens.server_name,
+            KeyringError::Invalid("error".into(), "save".into()),
+        );
+
+        super::save_oauth_tokens_with_store(&store, &tokens.server_name, &tokens)?;
+
+        let fallback_path = super::fallback_file_path()?;
+        assert!(fallback_path.exists(), "fallback file should be created");
+        let saved = super::read_fallback_file()?.expect("fallback file should load");
+        let key = super::compute_store_key(&tokens.server_name, &tokens.url)?;
+        let entry = saved.get(&key).expect("entry for key");
+        assert_eq!(entry.server_name, tokens.server_name);
+        assert_eq!(entry.server_url, tokens.url);
+        assert_eq!(entry.client_id, tokens.client_id);
+        assert_eq!(
+            entry.access_token,
+            tokens.token_response.0.access_token().secret().as_str()
+        );
+        assert!(store.saved_value(&tokens.server_name).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn delete_oauth_tokens_removes_all_storage() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store = MockCredentialStore::default();
+        let tokens = sample_tokens();
+        let serialized = serde_json::to_string(&tokens)?;
+        store.save(KEYRING_SERVICE, &tokens.server_name, &serialized)?;
+        super::save_oauth_tokens_to_file(&tokens)?;
+
+        let removed = super::delete_oauth_tokens_with_store(&store, &tokens.server_name)?;
+        assert!(removed);
+        assert!(!store.contains(&tokens.server_name));
+        assert!(!super::fallback_file_path()?.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn delete_oauth_tokens_propagates_keyring_errors() {
+        let _env = TempCodexHome::new();
+        let store = MockCredentialStore::default();
+        let tokens = sample_tokens();
+        store.set_error(
+            &tokens.server_name,
+            KeyringError::Invalid("error".into(), "delete".into()),
+        );
+        super::save_oauth_tokens_to_file(&tokens).unwrap();
+
+        let result = super::delete_oauth_tokens_with_store(&store, &tokens.server_name);
+        assert!(result.is_err());
+        assert!(super::fallback_file_path().unwrap().exists());
+    }
+
+    fn sample_tokens() -> StoredOAuthTokens {
+        let mut response = OAuthTokenResponse::new(
+            AccessToken::new("access-token".to_string()),
+            BasicTokenType::Bearer,
+            EmptyExtraTokenFields {},
+        );
+        response.set_refresh_token(Some(RefreshToken::new("refresh-token".to_string())));
+        response.set_scopes(Some(vec![
+            Scope::new("scope-a".to_string()),
+            Scope::new("scope-b".to_string()),
+        ]));
+        let expires_in = Duration::from_secs(3600);
+        response.set_expires_in(Some(&expires_in));
+
+        StoredOAuthTokens {
+            server_name: "test-server".to_string(),
+            url: "https://example.test".to_string(),
+            client_id: "client-id".to_string(),
+            token_response: WrappedOAuthTokenResponse(response),
+        }
+    }
+}
