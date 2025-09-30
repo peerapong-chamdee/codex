@@ -8,6 +8,10 @@ workspace = true
 
 [dependencies]
 anyhow = "1"
+axum = { workspace = true, default-features = false, features = [
+    "http1",
+    "tokio",
+] }
 keyring = { workspace = true, features = [
     "apple-native",
     "windows-native",
@@ -27,10 +31,6 @@ rmcp = { workspace = true, default-features = false, features = [
     "transport-streamable-http-client-reqwest",
     "transport-streamable-http-server",
 ] }
-axum = { workspace = true, default-features = false, features = [
-    "http1",
-    "tokio",
-] }
 futures = { workspace = true, default-features = false, features = ["std"] }
 reqwest = { workspace = true, default-features = false, features = [
     "json",
@@ -42,6 +42,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 dirs = { workspace = true }
 oauth2 = "5"
+tiny_http = { workspace = true }
 tokio = { workspace = true, features = [
     "io-util",
     "macros",
@@ -52,6 +53,8 @@ tokio = { workspace = true, features = [
     "time",
 ] }
 tracing = { workspace = true, features = ["log"] }
+urlencoding = { workspace = true }
+webbrowser = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

@@ -409,3 +409,26 @@ fn sha_256_prefix(value: &Value) -> Result<String> {
     let truncated = &hex[..16];
     Ok(truncated.to_string())
 }
+
+// TODO: implement this.
+// fn determine_oauth_status(name: &str, cfg: &McpServerConfig) -> McpOAuthStatus {
+//     match &cfg.transport {
+//         McpServerTransportConfig::Stdio { .. } => McpOAuthStatus::Unsupported,
+//         McpServerTransportConfig::StreamableHttp {
+//             bearer_token: Some(_),
+//             ..
+//         } => McpOAuthStatus::Unsupported,
+//         McpServerTransportConfig::StreamableHttp { url, .. } => {
+//             match load_oauth_tokens(name, url) {
+//                 Ok(Some(_)) => McpOAuthStatus::LoggedIn,
+//                 Ok(None) => McpOAuthStatus::LoggedOut,
+//                 Err(err) => {
+//                     eprintln!("warning: failed to read OAuth credentials for `{name}`: {err}");
+//                     McpOAuthStatus::Error {
+//                         message: err.to_string(),
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// }

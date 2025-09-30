@@ -872,16 +872,12 @@ dependencies = [
  "owo-colors",
  "predicates",
  "pretty_assertions",
- "rmcp",
  "serde_json",
  "supports-color",
  "tempfile",
- "tiny_http",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "urlencoding",
- "webbrowser",
 ]
 
 [[package]]
@@ -1198,8 +1194,11 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tiny_http",
  "tokio",
  "tracing",
+ "urlencoding",
+ "webbrowser",
 ]
 
 [[package]]

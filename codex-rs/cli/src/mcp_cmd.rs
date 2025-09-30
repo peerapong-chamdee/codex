@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::string::String;
-use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -16,18 +14,8 @@ use codex_core::config::load_global_mcp_servers;
 use codex_core::config::write_global_mcp_servers;
 use codex_core::config_types::McpServerConfig;
 use codex_core::config_types::McpServerTransportConfig;
-use codex_protocol::protocol::McpOAuthStatus;
-use codex_rmcp_client::StoredOAuthTokens;
-use codex_rmcp_client::WrappedOAuthTokenResponse;
 use codex_rmcp_client::delete_oauth_tokens;
-use codex_rmcp_client::load_oauth_tokens;
-use codex_rmcp_client::save_oauth_tokens;
-use rmcp::transport::auth::OAuthState;
-use tiny_http::Response;
-use tiny_http::Server;
-use tokio::sync::oneshot;
-use tokio::time::timeout;
-use urlencoding::decode;
+use codex_rmcp_client::perform_oauth_login;
 
 /// [experimental] Launch Codex as an MCP server or manage configured MCP servers.
 ///
@@ -287,11 +275,6 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
     let mut entries: Vec<_> = config.mcp_servers.iter().collect();
     entries.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-    let mut status_map: HashMap<String, McpOAuthStatus> = HashMap::new();
-    for (name, cfg) in &config.mcp_servers {
-        status_map.insert(name.clone(), determine_oauth_status(name, cfg));
-    }
-
     if list_args.json {
         let json_entries: Vec<_> = entries
             .into_iter()
@@ -312,11 +295,6 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
                     }
                 };
 
-                let status = status_map
-                    .get(name)
-                    .cloned()
-                    .unwrap_or(McpOAuthStatus::Unsupported);
-
                 serde_json::json!({
                     "name": name,
                     "transport": transport,
@@ -326,7 +304,6 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
                     "tool_timeout_sec": cfg
                         .tool_timeout_sec
                         .map(|timeout| timeout.as_secs_f64()),
-                    "oauth_status": oauth_status_label(&status),
                 })
             })
             .collect();
@@ -340,15 +317,10 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
         return Ok(());
     }
 
-    let mut stdio_rows: Vec<[String; 5]> = Vec::new();
-    let mut http_rows: Vec<[String; 4]> = Vec::new();
+    let mut stdio_rows: Vec<[String; 4]> = Vec::new();
+    let mut http_rows: Vec<[String; 3]> = Vec::new();
 
     for (name, cfg) in entries {
-        let status = status_map
-            .get(name)
-            .cloned()
-            .unwrap_or(McpOAuthStatus::Unsupported);
-        let status_label = oauth_status_label(&status);
         match &cfg.transport {
             McpServerTransportConfig::Stdio { command, args, env } => {
                 let args_display = if args.is_empty() {
@@ -369,13 +341,7 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
                             .join(", ")
                     }
                 };
-                stdio_rows.push([
-                    name.clone(),
-                    command.clone(),
-                    args_display,
-                    env_display,
-                    status_label.clone(),
-                ]);
+                stdio_rows.push([name.clone(), command.clone(), args_display, env_display]);
             }
             McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
                 let has_bearer = if bearer_token.is_some() {
@@ -383,19 +349,13 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
                 } else {
                     "False"
                 };
-                http_rows.push([name.clone(), url.clone(), has_bearer.into(), status_label]);
+                http_rows.push([name.clone(), url.clone(), has_bearer.into()]);
             }
         }
     }
 
     if !stdio_rows.is_empty() {
-        let mut widths = [
-            "Name".len(),
-            "Command".len(),
-            "Args".len(),
-            "Env".len(),
-            "OAuth".len(),
-        ];
+        let mut widths = ["Name".len(), "Command".len(), "Args".len(), "Env".len()];
         for row in &stdio_rows {
             for (i, cell) in row.iter().enumerate() {
                 widths[i] = widths[i].max(cell.len());
@@ -403,32 +363,28 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
         }
 
         println!(
-            "{:<name_w$}  {:<cmd_w$}  {:<args_w$}  {:<env_w$}  {:<oauth_w$}",
+            "{:<name_w$}  {:<cmd_w$}  {:<args_w$}  {:<env_w$}",
             "Name",
             "Command",
             "Args",
             "Env",
-            "OAuth",
             name_w = widths[0],
             cmd_w = widths[1],
             args_w = widths[2],
             env_w = widths[3],
-            oauth_w = widths[4],
         );
 
         for row in &stdio_rows {
             println!(
-                "{:<name_w$}  {:<cmd_w$}  {:<args_w$}  {:<env_w$}  {:<oauth_w$}",
+                "{:<name_w$}  {:<cmd_w$}  {:<args_w$}  {:<env_w$}",
                 row[0],
                 row[1],
                 row[2],
                 row[3],
-                row[4],
                 name_w = widths[0],
                 cmd_w = widths[1],
                 args_w = widths[2],
                 env_w = widths[3],
-                oauth_w = widths[4],
             );
         }
     }
@@ -438,12 +394,7 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
     }
 
     if !http_rows.is_empty() {
-        let mut widths = [
-            "Name".len(),
-            "Url".len(),
-            "Has Bearer Token".len(),
-            "OAuth".len(),
-        ];
+        let mut widths = ["Name".len(), "Url".len(), "Has Bearer Token".len()];
         for row in &http_rows {
             for (i, cell) in row.iter().enumerate() {
                 widths[i] = widths[i].max(cell.len());
@@ -451,28 +402,24 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
         }
 
         println!(
-            "{:<name_w$}  {:<url_w$}  {:<token_w$}  {:<oauth_w$}",
+            "{:<name_w$}  {:<url_w$}  {:<token_w$}",
             "Name",
             "Url",
             "Has Bearer Token",
-            "OAuth",
             name_w = widths[0],
             url_w = widths[1],
             token_w = widths[2],
-            oauth_w = widths[3],
         );
 
         for row in &http_rows {
             println!(
-                "{:<name_w$}  {:<url_w$}  {:<token_w$}  {:<oauth_w$}",
+                "{:<name_w$}  {:<url_w$}  {:<token_w$}",
                 row[0],
                 row[1],
                 row[2],
-                row[3],
                 name_w = widths[0],
                 url_w = widths[1],
                 token_w = widths[2],
-                oauth_w = widths[3],
             );
         }
     }
@@ -488,8 +435,6 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
     let Some(server) = config.mcp_servers.get(&get_args.name) else {
         bail!("No MCP server named '{name}' found.", name = get_args.name);
     };
-
-    let status = determine_oauth_status(&get_args.name, server);
 
     if get_args.json {
         let transport = match &server.transport {
@@ -514,7 +459,6 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
             "tool_timeout_sec": server
                 .tool_timeout_sec
                 .map(|timeout| timeout.as_secs_f64()),
-            "oauth_status": oauth_status_label(&status),
         }))?;
         println!("{output}");
         return Ok(());
@@ -559,7 +503,6 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
     if let Some(timeout) = server.tool_timeout_sec {
         println!("  tool_timeout_sec: {}", timeout.as_secs_f64());
     }
-    println!("  oauth_status: {}", oauth_status_label(&status));
     println!("  remove: codex mcp remove {}", get_args.name);
 
     Ok(())
@@ -590,15 +533,5 @@ fn validate_server_name(name: &str) -> Result<()> {
         Ok(())
     } else {
         bail!("invalid server name '{name}' (use letters, numbers, '-', '_')");
-    }
-}
-
-struct CallbackServerGuard {
-    server: Arc<Server>,
-}
-
-impl Drop for CallbackServerGuard {
-    fn drop(&mut self) {
-        self.server.unblock();
     }
 }

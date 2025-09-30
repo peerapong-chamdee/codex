@@ -31,11 +31,9 @@ codex-protocol-ts = { workspace = true }
 codex-tui = { workspace = true }
 codex-rmcp-client = { workspace = true }
 ctor = { workspace = true }
-rmcp = { workspace = true, default-features = false, features = ["auth"] }
 owo-colors = { workspace = true }
 serde_json = { workspace = true }
 supports-color = { workspace = true }
-tiny_http = { workspace = true }
 tokio = { workspace = true, features = [
     "io-std",
     "macros",
@@ -45,8 +43,6 @@ tokio = { workspace = true, features = [
 ] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-urlencoding = { workspace = true }
-webbrowser = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

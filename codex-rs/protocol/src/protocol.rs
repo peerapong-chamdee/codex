@@ -1166,17 +1166,6 @@ pub struct GetHistoryEntryResponseEvent {
     pub entry: Option<HistoryEntry>,
 }
 
-/// Response payload for `Op::ListMcpTools`.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum McpOAuthStatus {
-    Unsupported,
-    LoggedOut,
-    LoginRequired,
-    LoggedIn,
-    Error { message: String },
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct McpListToolsResponseEvent {
     /// Fully qualified tool name -> tool definition.
