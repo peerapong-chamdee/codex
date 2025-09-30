@@ -334,6 +334,9 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// This test writes to a fallback credentials file in CODEX_HOME.
+/// Ideally, we wouldn't need to serialize the test but it's much more cumbersome to wire CODEX_HOME through the code.
+#[serial(codex_home)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn streamable_http_with_oauth_round_trip() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
@@ -416,7 +419,7 @@ async fn streamable_http_with_oauth_round_trip() -> anyhow::Result<()> {
                 server_name.to_string(),
                 McpServerConfig {
                     transport: McpServerTransportConfig::StreamableHttp {
-                        url: server_url.clone(),
+                        url: server_url,
                         bearer_token: None,
                     },
                     startup_timeout_sec: Some(Duration::from_secs(10)),
@@ -566,9 +569,8 @@ fn write_fallback_oauth_tokens(
 ) -> anyhow::Result<()> {
     let expires_at = SystemTime::now()
         .checked_add(Duration::from_secs(3600))
-        .expect("expiry calculation should succeed")
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after epoch")
+        .ok_or_else(|| anyhow::anyhow!("failed to compute expiry time"))?
+        .duration_since(UNIX_EPOCH)?
         .as_millis() as u64;
 
     let store = serde_json::json!({

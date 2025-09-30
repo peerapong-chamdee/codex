@@ -76,7 +76,7 @@ fn list_and_get_render_expected_output() -> Result<()> {
               }
             },
             "startup_timeout_sec": null,
-            "tool_timeout_sec": null,
+            "tool_timeout_sec": null
           }
         ]
         )
