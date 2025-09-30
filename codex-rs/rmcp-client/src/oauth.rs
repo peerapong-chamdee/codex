@@ -18,7 +18,6 @@
 
 use anyhow::Context;
 use anyhow::Result;
-use anyhow::anyhow;
 use keyring::Entry;
 use oauth2::AccessToken;
 use oauth2::EmptyExtraTokenFields;
@@ -33,7 +32,6 @@ use serde_json::Value;
 use serde_json::map::Map as JsonMap;
 use sha2::Digest;
 use sha2::Sha256;
-use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -95,81 +93,26 @@ struct KeyringCredentialStore;
 
 impl CredentialStore for KeyringCredentialStore {
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
-        run_keyring_operation(
-            service.to_string(),
-            account.to_string(),
-            move |service, account| {
-                let entry = Entry::new(&service, &account)?;
-                match entry.get_password() {
-                    Ok(password) => Ok(Some(password)),
-                    Err(keyring::Error::NoEntry) => Ok(None),
-                    Err(error) => Err(error),
-                }
-            },
-        )
+        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
+        match entry.get_password() {
+            Ok(password) => Ok(Some(password)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(CredentialStoreError::new(error)),
+        }
     }
 
     fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError> {
-        let stored_value = value.to_string();
-        run_keyring_operation(
-            service.to_string(),
-            account.to_string(),
-            move |service, account| {
-                let entry = Entry::new(&service, &account)?;
-                entry.set_password(&stored_value)
-            },
-        )
+        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
+        entry.set_password(value).map_err(CredentialStoreError::new)
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
-        run_keyring_operation(
-            service.to_string(),
-            account.to_string(),
-            move |service, account| {
-                let entry = Entry::new(&service, &account)?;
-                match entry.delete_credential() {
-                    Ok(()) => Ok(true),
-                    Err(keyring::Error::NoEntry) => Ok(false),
-                    Err(error) => Err(error),
-                }
-            },
-        )
-    }
-}
-
-fn run_keyring_operation<T, F>(
-    service: String,
-    account: String,
-    operation: F,
-) -> Result<T, CredentialStoreError>
-where
-    T: Send + 'static,
-    F: FnOnce(String, String) -> Result<T, keyring::Error> + Send + 'static,
-{
-    if tokio::runtime::Handle::try_current().is_ok() {
-        let handle = std::thread::Builder::new()
-            .name("codex-keyring".into())
-            .spawn(move || operation(service, account))
-            .map_err(|error| {
-                CredentialStoreError::new(anyhow!("failed to spawn keyring thread: {error}"))
-            })?;
-
-        handle
-            .join()
-            .map_err(|panic| CredentialStoreError::new(anyhow!(panic_message(panic))))?
-            .map_err(CredentialStoreError::new)
-    } else {
-        operation(service, account).map_err(CredentialStoreError::new)
-    }
-}
-
-fn panic_message(panic: Box<dyn Any + Send + 'static>) -> String {
-    match panic.downcast::<String>() {
-        Ok(message) => format!("keyring operation panicked: {}", *message),
-        Err(panic) => match panic.downcast::<&'static str>() {
-            Ok(message) => format!("keyring operation panicked: {}", *message),
-            Err(_) => "keyring operation panicked with an unknown payload".to_string(),
-        },
+        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(error) => Err(CredentialStoreError::new(error)),
+        }
     }
 }
 
@@ -469,9 +412,7 @@ fn expires_in_from_timestamp(expires_at: u64) -> Option<u64> {
     if expires_at <= now_ms {
         None
     } else {
-        let remaining = expires_at - now_ms;
-        let rounded = remaining.checked_add(999).unwrap_or(u64::MAX);
-        Some(rounded / 1000)
+        Some((expires_at - now_ms) / 1000)
     }
 }
 
