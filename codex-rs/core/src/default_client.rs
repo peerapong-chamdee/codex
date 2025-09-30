@@ -135,7 +135,8 @@ mod tests {
     #[test]
     fn test_get_codex_user_agent() {
         let user_agent = get_codex_user_agent();
-        assert!(user_agent.starts_with("codex_cli_rs/"));
+        let expected_prefix = format!("{}/", ORIGINATOR.value);
+        assert!(user_agent.starts_with(&expected_prefix));
     }
 
     #[tokio::test]
@@ -212,11 +213,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn test_macos() {
         use regex_lite::Regex;
+        use regex_lite::escape;
         let user_agent = get_codex_user_agent();
-        let re = Regex::new(
-            r"^codex_cli_rs/\d+\.\d+\.\d+ \(Mac OS \d+\.\d+\.\d+; (x86_64|arm64)\) (\S+)$",
-        )
-        .unwrap();
+        let pattern = format!(
+            r"^{}/\d+\.\d+\.\d+ \(Mac OS \d+\.\d+\.\d+; (x86_64|arm64)\) (\S+)$",
+            escape(ORIGINATOR.value.as_str())
+        );
+        let re = Regex::new(&pattern).unwrap();
         assert!(re.is_match(&user_agent));
     }
 }
