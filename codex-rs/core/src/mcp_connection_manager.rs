@@ -88,6 +88,7 @@ fn qualify_tools(tools: Vec<ToolInfo>) -> HashMap<String, ToolInfo> {
 }
 
 fn server_supports_oauth(result: &InitializeResult) -> bool {
+    tracing::error!("[DEBUG] server_supports_oauth: {result:?}");
     result
         .capabilities
         .experimental
@@ -238,19 +239,6 @@ impl McpConnectionManager {
             let startup_timeout = cfg.startup_timeout_sec.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
             let tool_timeout = cfg.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT);
 
-            let stored_tokens = match load_oauth_tokens(&server_name) {
-                Ok(tokens) => tokens,
-                Err(err) => {
-                    let message = err.to_string();
-                    warn!(
-                        "failed to read OAuth tokens for server `{server_name}` from keyring: {message}"
-                    );
-                    oauth_statuses.insert(server_name.clone(), McpOAuthStatus::Error { message });
-                    None
-                }
-            };
-
-            let use_rmcp_client_flag = use_rmcp_client;
             join_set.spawn(async move {
                 let McpServerConfig { transport, .. } = cfg;
                 let params = mcp_types::InitializeRequestParams {
@@ -282,7 +270,7 @@ impl McpConnectionManager {
                         let command_os: OsString = command.into();
                         let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
                         match McpClientAdapter::new_stdio_client(
-                            use_rmcp_client_flag,
+                            use_rmcp_client,
                             command_os,
                             args_os,
                             env,
@@ -303,8 +291,19 @@ impl McpConnectionManager {
                         }
                     }
                     McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
-                        let oauth_tokens = stored_tokens.clone();
-                        let auth = if let Some(tokens) = oauth_tokens.clone() {
+                        let stored_tokens = match load_oauth_tokens(&server_name, &url) {
+                            Ok(tokens) => tokens,
+                            Err(err) => {
+                                let message = err.to_string();
+                                warn!(
+                                    "failed to read tokens for server `{server_name}`: {message}"
+                                );
+                                oauth_statuses
+                                    .insert(server_name.clone(), McpOAuthStatus::Error { message });
+                                None
+                            }
+                        };
+                        let auth = if let Some(tokens) = stored_tokens.clone() {
                             Some(StreamableHttpAuth::Oauth(Box::new(OAuthClientConfig {
                                 stored_tokens: Some(tokens),
                             })))
@@ -325,14 +324,15 @@ impl McpConnectionManager {
                         .await
                         {
                             Ok((client, init_result)) => {
-                                let mut status = None;
-                                if server_supports_oauth(&init_result) {
-                                    status = Some(if oauth_tokens.is_some() {
-                                        McpOAuthStatus::LoggedIn
+                                let status = if server_supports_oauth(&init_result) {
+                                    if stored_tokens.is_some() {
+                                        Some(McpOAuthStatus::LoggedIn)
                                     } else {
-                                        McpOAuthStatus::LoggedOut
-                                    });
-                                }
+                                        Some(McpOAuthStatus::LoggedOut)
+                                    }
+                                } else {
+                                    None
+                                };
 
                                 Ok((
                                     ManagedClient {
@@ -344,7 +344,7 @@ impl McpConnectionManager {
                                 ))
                             }
                             Err(err) => {
-                                let status = if oauth_tokens.is_none() {
+                                let status = if stored_tokens.is_none() {
                                     Some(McpOAuthStatus::LoginRequired)
                                 } else {
                                     Some(McpOAuthStatus::Error {
@@ -367,7 +367,7 @@ impl McpConnectionManager {
             let (server_name, result) = match res {
                 Ok(result) => result,
                 Err(e) => {
-                    warn!("Task panic when starting MCP server: {e:#}");
+                    warn!("MCP server failed to start: {e:#}");
                     continue;
                 }
             };

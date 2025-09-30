@@ -698,16 +698,18 @@ fn determine_oauth_status(name: &str, cfg: &McpServerConfig) -> McpOAuthStatus {
             bearer_token: Some(_),
             ..
         } => McpOAuthStatus::Unsupported,
-        McpServerTransportConfig::StreamableHttp { .. } => match load_oauth_tokens(name) {
-            Ok(Some(_)) => McpOAuthStatus::LoggedIn,
-            Ok(None) => McpOAuthStatus::LoggedOut,
-            Err(err) => {
-                eprintln!("warning: failed to read OAuth credentials for `{name}`: {err}");
-                McpOAuthStatus::Error {
-                    message: err.to_string(),
+        McpServerTransportConfig::StreamableHttp { url, .. } => {
+            match load_oauth_tokens(name, url) {
+                Ok(Some(_)) => McpOAuthStatus::LoggedIn,
+                Ok(None) => McpOAuthStatus::LoggedOut,
+                Err(err) => {
+                    eprintln!("warning: failed to read OAuth credentials for `{name}`: {err}");
+                    McpOAuthStatus::Error {
+                        message: err.to_string(),
+                    }
                 }
             }
-        },
+        }
     }
 }
 

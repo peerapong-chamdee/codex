@@ -52,7 +52,7 @@ impl PartialEq for WrappedOAuthTokenResponse {
     }
 }
 
-pub fn load_oauth_tokens(server_name: &str) -> Result<Option<StoredOAuthTokens>> {
+pub fn load_oauth_tokens(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
     match Entry::new(KEYRING_SERVICE, server_name) {
         Ok(entry) => match entry.get_password() {
             Ok(serialized) => {
@@ -60,16 +60,16 @@ pub fn load_oauth_tokens(server_name: &str) -> Result<Option<StoredOAuthTokens>>
                     .context("failed to deserialize OAuth tokens from keyring")?;
                 Ok(Some(tokens))
             }
-            Err(keyring::Error::NoEntry) => load_oauth_tokens_from_file(server_name),
+            Err(keyring::Error::NoEntry) => load_oauth_tokens_from_file(server_name, url),
             Err(err) => {
                 warn!("failed to read OAuth tokens from keyring: {err}");
-                load_oauth_tokens_from_file(server_name)
+                load_oauth_tokens_from_file(server_name, url)
                     .with_context(|| format!("failed to read OAuth tokens from keyring: {err}"))
             }
         },
         Err(err) => {
             warn!("failed to access keyring entry for {server_name}: {err}");
-            load_oauth_tokens_from_file(server_name)
+            load_oauth_tokens_from_file(server_name, url)
                 .with_context(|| format!("failed to access keyring entry for {server_name}: {err}"))
         }
     }
@@ -205,16 +205,19 @@ struct FallbackTokenEntry {
     #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
-    scope: String,
+    scopes: Vec<String>,
 }
 
-fn load_oauth_tokens_from_file(server_name: &str) -> Result<Option<StoredOAuthTokens>> {
+fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
     let Some(store) = read_fallback_file()? else {
         return Ok(None);
     };
 
+    let key = compute_store_key(server_name, url)?;
+
     for entry in store.values() {
-        if entry.server_name != server_name {
+        let entry_key = compute_store_key(&entry.server_name, &entry.server_url)?;
+        if entry_key != key {
             continue;
         }
 
@@ -228,16 +231,9 @@ fn load_oauth_tokens_from_file(server_name: &str) -> Result<Option<StoredOAuthTo
             token_response.set_refresh_token(Some(RefreshToken::new(refresh)));
         }
 
-        let scope_str = entry.scope.trim();
-        if !scope_str.is_empty() {
-            let scopes: Vec<Scope> = scope_str
-                .split_whitespace()
-                .filter(|scope| !scope.is_empty())
-                .map(|scope| Scope::new(scope.to_string()))
-                .collect();
-            if !scopes.is_empty() {
-                token_response.set_scopes(Some(scopes));
-            }
+        let scopes = entry.scopes.clone();
+        if !scopes.is_empty() {
+            token_response.set_scopes(Some(scopes.into_iter().map(Scope::new).collect()));
         }
 
         if let Some(expires_at) = entry.expires_at
@@ -264,18 +260,22 @@ fn save_oauth_tokens_to_file(tokens: &StoredOAuthTokens) -> Result<()> {
     let mut store = read_fallback_file()?.unwrap_or_default();
     let key = compute_store_key(&tokens.server_name, &tokens.url)?;
 
+    let token_response = &tokens.token_response.0;
+    let refresh_token = token_response
+        .refresh_token()
+        .map(|token| token.secret().to_string());
+    let scopes = token_response
+        .scopes()
+        .map(|s| s.iter().map(|s| s.to_string()).collect())
+        .unwrap_or_default();
     let entry = FallbackTokenEntry {
         server_name: tokens.server_name.clone(),
         server_url: tokens.url.clone(),
         client_id: tokens.client_id.clone(),
-        access_token: tokens.token_response.0.access_token().secret().to_string(),
-        expires_at: compute_expires_at_millis(&tokens.token_response.0),
-        refresh_token: tokens
-            .token_response
-            .0
-            .refresh_token()
-            .map(|token| token.secret().to_string()),
-        scope: scope_string(&tokens.token_response.0),
+        access_token: token_response.access_token().secret().to_string(),
+        expires_at: compute_expires_at_millis(token_response),
+        refresh_token,
+        scopes,
     };
 
     store.insert(key, entry);
@@ -302,20 +302,6 @@ fn delete_oauth_tokens_from_file(server_name: &str, url: Option<&str>) -> Result
     }
 
     Ok(removed)
-}
-
-fn scope_string(response: &OAuthTokenResponse) -> String {
-    response
-        .scopes()
-        .map(|scopes| {
-            scopes
-                .iter()
-                .map(AsRef::as_ref)
-                .filter(|scope| !scope.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .unwrap_or_default()
 }
 
 fn compute_expires_at_millis(response: &OAuthTokenResponse) -> Option<u64> {
@@ -354,16 +340,7 @@ fn compute_store_key(server_name: &str, server_url: &str) -> Result<String> {
     payload.insert("url".to_string(), Value::String(server_url.to_string()));
     payload.insert("headers".to_string(), Value::Object(JsonMap::new()));
 
-    let json = Value::Object(payload);
-    let serialized =
-        serde_json::to_string(&json).context("failed to serialize MCP OAuth key payload")?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(serialized.as_bytes());
-    let digest = hasher.finalize();
-    let hex = format!("{digest:x}");
-    let truncated = &hex[..16];
-
+    let truncated = sha_256_prefix(&Value::Object(payload))?;
     Ok(format!("{server_name}|{truncated}"))
 }
 
@@ -420,4 +397,15 @@ fn write_fallback_file(store: &FallbackFile) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn sha_256_prefix(value: &Value) -> Result<String> {
+    let serialized =
+        serde_json::to_string(&value).context("failed to serialize MCP OAuth key payload")?;
+    let mut hasher = Sha256::new();
+    hasher.update(serialized.as_bytes());
+    let digest = hasher.finalize();
+    let hex = format!("{digest:x}");
+    let truncated = &hex[..16];
+    Ok(truncated.to_string())
 }
