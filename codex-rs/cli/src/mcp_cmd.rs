@@ -219,7 +219,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
 
     if !config.use_experimental_use_rmcp_client {
         bail!(
-            "OAuth login is only supported when use_experimental_use_rmcp_client is true in config.toml."
+            "OAuth login is only supported when experimental_use_rmcp_client is true in config.toml."
         );
     }
 

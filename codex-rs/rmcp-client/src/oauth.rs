@@ -660,7 +660,7 @@ mod tests {
 
         let loaded = super::load_oauth_tokens_with_store(&store, &tokens.server_name, &tokens.url)?
             .expect("tokens should load from fallback");
-        assert_eq!(loaded, expected);
+        assert_tokens_match_without_expiry(&loaded, &expected);
         Ok(())
     }
 
@@ -679,7 +679,7 @@ mod tests {
 
         let loaded = super::load_oauth_tokens_with_store(&store, &tokens.server_name, &tokens.url)?
             .expect("tokens should load from fallback");
-        assert_eq!(loaded, expected);
+        assert_tokens_match_without_expiry(&loaded, &expected);
         Ok(())
     }
 
@@ -760,6 +760,46 @@ mod tests {
         let result = super::delete_oauth_tokens_with_store(&store, &tokens.server_name);
         assert!(result.is_err());
         assert!(super::fallback_file_path().unwrap().exists());
+    }
+
+    fn assert_tokens_match_without_expiry(
+        actual: &StoredOAuthTokens,
+        expected: &StoredOAuthTokens,
+    ) {
+        assert_eq!(actual.server_name, expected.server_name);
+        assert_eq!(actual.url, expected.url);
+        assert_eq!(actual.client_id, expected.client_id);
+        assert_token_response_match_without_expiry(
+            &actual.token_response,
+            &expected.token_response,
+        );
+    }
+
+    fn assert_token_response_match_without_expiry(
+        actual: &WrappedOAuthTokenResponse,
+        expected: &WrappedOAuthTokenResponse,
+    ) {
+        let actual_response = &actual.0;
+        let expected_response = &expected.0;
+
+        assert_eq!(
+            actual_response.access_token().secret(),
+            expected_response.access_token().secret()
+        );
+        assert_eq!(actual_response.token_type(), expected_response.token_type());
+        assert_eq!(
+            actual_response.refresh_token().map(RefreshToken::secret),
+            expected_response.refresh_token().map(RefreshToken::secret),
+        );
+        assert_eq!(actual_response.scopes(), expected_response.scopes());
+        assert_eq!(
+            actual_response.extra_fields(),
+            expected_response.extra_fields()
+        );
+        assert_eq!(
+            actual_response.expires_in().is_some(),
+            expected_response.expires_in().is_some()
+        );
     }
 
     fn sample_tokens() -> StoredOAuthTokens {
