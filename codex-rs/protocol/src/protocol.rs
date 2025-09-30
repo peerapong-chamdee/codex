@@ -1181,9 +1181,6 @@ pub enum McpOAuthStatus {
 pub struct McpListToolsResponseEvent {
     /// Fully qualified tool name -> tool definition.
     pub tools: std::collections::HashMap<String, McpTool>,
-    /// OAuth status for each server, keyed by server name.
-    #[serde(default)]
-    pub oauth_status: std::collections::HashMap<String, McpOAuthStatus>,
 }
 
 /// Response payload for `Op::ListCustomPrompts`.

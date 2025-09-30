@@ -1322,14 +1322,10 @@ async fn submission_loop(
 
                 // This is a cheap lookup from the connection manager's cache.
                 let tools = sess.services.mcp_connection_manager.list_all_tools();
-                let oauth_status = sess.services.mcp_connection_manager.oauth_statuses();
                 let event = Event {
                     id: sub_id,
                     msg: EventMsg::McpListToolsResponse(
-                        crate::protocol::McpListToolsResponseEvent {
-                            tools,
-                            oauth_status,
-                        },
+                        crate::protocol::McpListToolsResponseEvent { tools },
                     ),
                 };
                 sess.send_event(event).await;

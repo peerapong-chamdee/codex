@@ -27,7 +27,6 @@ use codex_core::protocol::FileChange;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
-use codex_protocol::protocol::McpOAuthStatus;
 use image::DynamicImage;
 use image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
@@ -850,7 +849,6 @@ pub(crate) fn empty_mcp_output() -> PlainHistoryCell {
 pub(crate) fn new_mcp_tools_output(
     config: &Config,
     tools: std::collections::HashMap<String, mcp_types::Tool>,
-    oauth_status: &std::collections::HashMap<String, McpOAuthStatus>,
 ) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = vec![
         "/mcp".magenta().into(),
@@ -889,17 +887,6 @@ pub(crate) fn new_mcp_tools_output(
             McpServerTransportConfig::StreamableHttp { url, .. } => {
                 lines.push(vec!["    • URL: ".into(), url.clone().into()].into());
             }
-        }
-
-        if let Some(status) = oauth_status.get(server) {
-            let status_span = match status {
-                McpOAuthStatus::LoggedIn => "Logged in".green(),
-                McpOAuthStatus::LoginRequired => "Login required".red(),
-                McpOAuthStatus::LoggedOut => "Not logged in".dim(),
-                McpOAuthStatus::Unsupported => "Not supported".dim(),
-                McpOAuthStatus::Error { message } => format!("Error: {message}").red(),
-            };
-            lines.push(vec!["    • OAuth: ".into(), status_span].into());
         }
 
         if names.is_empty() {

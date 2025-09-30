@@ -16,7 +16,6 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_mcp_client::McpClient;
-use codex_protocol::protocol::McpOAuthStatus;
 use codex_rmcp_client::OAuthClientConfig;
 use codex_rmcp_client::RmcpClient;
 use codex_rmcp_client::StreamableHttpAuth;
@@ -24,7 +23,6 @@ use codex_rmcp_client::StreamableHttpClientConfig;
 use codex_rmcp_client::load_oauth_tokens;
 use mcp_types::ClientCapabilities;
 use mcp_types::Implementation;
-use mcp_types::InitializeResult;
 use mcp_types::Tool;
 
 use serde_json::json;
@@ -87,17 +85,6 @@ fn qualify_tools(tools: Vec<ToolInfo>) -> HashMap<String, ToolInfo> {
     qualified_tools
 }
 
-fn server_supports_oauth(result: &InitializeResult) -> bool {
-    tracing::error!("[DEBUG] server_supports_oauth: {result:?}");
-    result
-        .capabilities
-        .experimental
-        .as_ref()
-        .and_then(|value| value.as_object())
-        .and_then(|obj| obj.get("authorization"))
-        .is_some()
-}
-
 struct ToolInfo {
     server_name: String,
     tool_name: String,
@@ -143,10 +130,10 @@ impl McpClientAdapter {
         config: StreamableHttpClientConfig,
         params: mcp_types::InitializeRequestParams,
         startup_timeout: Duration,
-    ) -> Result<(Self, InitializeResult)> {
+    ) -> Result<Self> {
         let client = Arc::new(RmcpClient::new_streamable_http_client(config).await?);
-        let initialize_result = client.initialize(params, Some(startup_timeout)).await?;
-        Ok((McpClientAdapter::Rmcp(client), initialize_result))
+        client.initialize(params, Some(startup_timeout)).await?;
+        Ok(McpClientAdapter::Rmcp(client))
     }
 
     async fn list_tools(
@@ -184,9 +171,6 @@ pub(crate) struct McpConnectionManager {
 
     /// Fully qualified tool name -> tool instance.
     tools: HashMap<String, ToolInfo>,
-
-    /// OAuth status for each configured server.
-    oauth_statuses: HashMap<String, McpOAuthStatus>,
 }
 
 impl McpConnectionManager {
@@ -210,7 +194,6 @@ impl McpConnectionManager {
         // Launch all configured servers concurrently.
         let mut join_set = JoinSet::new();
         let mut errors = ClientStartErrors::new();
-        let mut oauth_statuses: HashMap<String, McpOAuthStatus> = HashMap::new();
 
         for (server_name, cfg) in mcp_servers {
             // Validate server name before spawning
@@ -229,10 +212,9 @@ impl McpConnectionManager {
             ) && !use_rmcp_client
             {
                 info!(
-                    "skipping MCP server `{}` configured with url because rmcp client is disabled",
+                    "skipping MCP server `{}` because the legacy MCP client only supports stdio servers",
                     server_name
                 );
-                oauth_statuses.insert(server_name, McpOAuthStatus::Unsupported);
                 continue;
             }
 
@@ -262,10 +244,7 @@ impl McpConnectionManager {
                     protocol_version: mcp_types::MCP_SCHEMA_VERSION.to_owned(),
                 };
 
-                let result: Result<
-                    (ManagedClient, Option<McpOAuthStatus>),
-                    (anyhow::Error, Option<McpOAuthStatus>),
-                > = match transport {
+                let result: Result<ManagedClient, anyhow::Error> = match transport {
                     McpServerTransportConfig::Stdio { command, args, env } => {
                         let command_os: OsString = command.into();
                         let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
@@ -279,15 +258,12 @@ impl McpConnectionManager {
                         )
                         .await
                         {
-                            Ok(client) => Ok((
-                                ManagedClient {
-                                    client,
-                                    startup_timeout,
-                                    tool_timeout: Some(tool_timeout),
-                                },
-                                None,
-                            )),
-                            Err(err) => Err((err, None)),
+                            Ok(client) => Ok(ManagedClient {
+                                client,
+                                startup_timeout,
+                                tool_timeout: Some(tool_timeout),
+                            }),
+                            Err(err) => Err(err),
                         }
                     }
                     McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
@@ -298,8 +274,6 @@ impl McpConnectionManager {
                                 warn!(
                                     "failed to read tokens for server `{server_name}`: {message}"
                                 );
-                                oauth_statuses
-                                    .insert(server_name.clone(), McpOAuthStatus::Error { message });
                                 None
                             }
                         };
@@ -323,36 +297,12 @@ impl McpConnectionManager {
                         )
                         .await
                         {
-                            Ok((client, init_result)) => {
-                                let status = if server_supports_oauth(&init_result) {
-                                    if stored_tokens.is_some() {
-                                        Some(McpOAuthStatus::LoggedIn)
-                                    } else {
-                                        Some(McpOAuthStatus::LoggedOut)
-                                    }
-                                } else {
-                                    None
-                                };
-
-                                Ok((
-                                    ManagedClient {
-                                        client,
-                                        startup_timeout,
-                                        tool_timeout: Some(tool_timeout),
-                                    },
-                                    status,
-                                ))
-                            }
-                            Err(err) => {
-                                let status = if stored_tokens.is_none() {
-                                    Some(McpOAuthStatus::LoginRequired)
-                                } else {
-                                    Some(McpOAuthStatus::Error {
-                                        message: err.to_string(),
-                                    })
-                                };
-                                Err((err, status))
-                            }
+                            Ok(client) => Ok(ManagedClient {
+                                client,
+                                startup_timeout,
+                                tool_timeout: Some(tool_timeout),
+                            }),
+                            Err(err) => Err(err),
                         }
                     }
                 };
@@ -373,20 +323,10 @@ impl McpConnectionManager {
             };
 
             match result {
-                Ok((managed_client, status)) => {
-                    if let Some(status) = status {
-                        oauth_statuses.insert(server_name.clone(), status);
-                    } else {
-                        oauth_statuses
-                            .entry(server_name.clone())
-                            .or_insert(McpOAuthStatus::Unsupported);
-                    }
+                Ok(managed_client) => {
                     clients.insert(server_name, managed_client);
                 }
-                Err((error, status)) => {
-                    if let Some(status) = status {
-                        oauth_statuses.insert(server_name.clone(), status);
-                    }
+                Err(error) => {
                     errors.insert(server_name, error);
                 }
             }
@@ -402,14 +342,7 @@ impl McpConnectionManager {
 
         let tools = qualify_tools(all_tools);
 
-        Ok((
-            Self {
-                clients,
-                tools,
-                oauth_statuses,
-            },
-            errors,
-        ))
+        Ok((Self { clients, tools }, errors))
     }
 
     /// Returns a single map that contains **all** tools. Each key is the
@@ -419,10 +352,6 @@ impl McpConnectionManager {
             .iter()
             .map(|(name, tool)| (name.clone(), tool.tool.clone()))
             .collect()
-    }
-
-    pub fn oauth_statuses(&self) -> HashMap<String, McpOAuthStatus> {
-        self.oauth_statuses.clone()
     }
 
     /// Invoke the tool indicated by the (server, tool) pair.
