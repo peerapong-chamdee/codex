@@ -1187,14 +1187,17 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "dirs",
  "futures",
  "keyring",
  "mcp-types",
+ "oauth2",
  "pretty_assertions",
  "reqwest",
  "rmcp",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
 ]

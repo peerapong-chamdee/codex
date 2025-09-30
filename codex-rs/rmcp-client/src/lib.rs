@@ -1,3 +1,4 @@
+mod find_codex_home;
 mod logging_client_handler;
 mod oauth;
 mod rmcp_client;
