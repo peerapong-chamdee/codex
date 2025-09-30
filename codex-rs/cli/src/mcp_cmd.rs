@@ -64,9 +64,11 @@ pub enum McpSubcommand {
     Remove(RemoveArgs),
 
     /// [experimental] Authenticate with a configured MCP server via OAuth.
+    /// Requires experimental_use_rmcp_client = true in config.toml.
     Login(LoginArgs),
 
     /// [experimental] Remove stored OAuth credentials for a server.
+    /// Requires experimental_use_rmcp_client = true in config.toml.
     Logout(LogoutArgs),
 }
 
@@ -109,13 +111,13 @@ pub struct RemoveArgs {
 
 #[derive(Debug, clap::Parser)]
 pub struct LoginArgs {
-    /// Name of the MCP server configuration to authenticate.
+    /// Name of the MCP server to authenticate with oauth.
     pub name: String,
 }
 
 #[derive(Debug, clap::Parser)]
 pub struct LogoutArgs {
-    /// Name of the MCP server configuration to deauthenticate.
+    /// Name of the MCP server to deauthenticate.
     pub name: String,
 }
 
@@ -234,6 +236,12 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     let overrides = config_overrides.parse_overrides().map_err(|e| anyhow!(e))?;
     let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
         .context("failed to load configuration")?;
+
+    if !config.use_experimental_use_rmcp_client {
+        bail!(
+            "OAuth login is only supported when use_experimental_use_rmcp_client is true in config.toml."
+        );
+    }
 
     let LoginArgs { name } = login_args;
 
@@ -592,133 +600,5 @@ struct CallbackServerGuard {
 impl Drop for CallbackServerGuard {
     fn drop(&mut self) {
         self.server.unblock();
-    }
-}
-
-async fn perform_oauth_login(server_name: &str, server_url: &str) -> Result<()> {
-    let server = Arc::new(Server::http("127.0.0.1:0").map_err(|err| anyhow!(err))?);
-    let guard = CallbackServerGuard {
-        server: Arc::clone(&server),
-    };
-
-    let actual_port = server
-        .server_addr()
-        .to_ip()
-        .ok_or_else(|| anyhow!("unable to determine callback port"))?
-        .port();
-    let redirect_uri = format!("http://localhost:{actual_port}/callback");
-
-    let (tx, rx) = oneshot::channel();
-    spawn_callback_server(server, tx);
-
-    let mut oauth_state = OAuthState::new(server_url, None).await?;
-    oauth_state.start_authorization(&[], &redirect_uri).await?;
-    let auth_url = oauth_state.get_authorization_url().await?;
-
-    println!("Authorize `{server_name}` by opening this URL in your browser:\n{auth_url}\n");
-
-    if webbrowser::open(&auth_url).is_err() {
-        println!("(Browser launch failed; please copy the URL above manually.)");
-    }
-
-    let (code, csrf_state) = timeout(Duration::from_secs(300), rx)
-        .await
-        .context("timed out waiting for OAuth callback")?
-        .context("OAuth callback was cancelled")?;
-
-    oauth_state
-        .handle_callback(&code, &csrf_state)
-        .await
-        .context("failed to handle OAuth callback")?;
-
-    let (client_id, credentials_opt) = oauth_state
-        .get_credentials()
-        .await
-        .context("failed to retrieve OAuth credentials")?;
-    let credentials =
-        credentials_opt.ok_or_else(|| anyhow!("OAuth provider did not return credentials"))?;
-
-    let stored = StoredOAuthTokens {
-        server_name: server_name.to_string(),
-        url: server_url.to_string(),
-        client_id,
-        token_response: WrappedOAuthTokenResponse(credentials),
-    };
-    save_oauth_tokens(server_name, &stored)?;
-
-    drop(guard);
-    Ok(())
-}
-
-fn spawn_callback_server(server: Arc<Server>, tx: oneshot::Sender<(String, String)>) {
-    std::thread::spawn(move || {
-        while let Ok(request) = server.recv() {
-            let path = request.url().to_string();
-            if let Some((code, state)) = parse_oauth_callback(&path) {
-                let response =
-                    Response::from_string("Authentication complete. You may close this window.");
-                let _ = request.respond(response);
-                let _ = tx.send((code, state));
-                break;
-            } else {
-                let response =
-                    Response::from_string("Invalid OAuth callback").with_status_code(400);
-                let _ = request.respond(response);
-            }
-        }
-    });
-}
-
-fn parse_oauth_callback(path: &str) -> Option<(String, String)> {
-    let (route, query) = path.split_once('?')?;
-    if route != "/callback" {
-        return None;
-    }
-
-    let mut code = None;
-    let mut state = None;
-
-    for pair in query.split('&') {
-        let (key, value) = pair.split_once('=')?;
-        let decoded = decode(value).ok()?.into_owned();
-        match key {
-            "code" => code = Some(decoded),
-            "state" => state = Some(decoded),
-            _ => {}
-        }
-    }
-
-    Some((code?, state?))
-}
-
-fn determine_oauth_status(name: &str, cfg: &McpServerConfig) -> McpOAuthStatus {
-    match &cfg.transport {
-        McpServerTransportConfig::Stdio { .. } => McpOAuthStatus::Unsupported,
-        McpServerTransportConfig::StreamableHttp {
-            bearer_token: Some(_),
-            ..
-        } => McpOAuthStatus::Unsupported,
-        McpServerTransportConfig::StreamableHttp { url, .. } => {
-            match load_oauth_tokens(name, url) {
-                Ok(Some(_)) => McpOAuthStatus::LoggedIn,
-                Ok(None) => McpOAuthStatus::LoggedOut,
-                Err(err) => {
-                    eprintln!("warning: failed to read OAuth credentials for `{name}`: {err}");
-                    McpOAuthStatus::Error {
-                        message: err.to_string(),
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn oauth_status_label(status: &McpOAuthStatus) -> String {
-    match status {
-        McpOAuthStatus::Unsupported => "not supported".to_string(),
-        McpOAuthStatus::LoggedIn => "logged in".to_string(),
-        McpOAuthStatus::LoggedOut => "not logged in".to_string(),
-        McpOAuthStatus::LoginRequired => "login required".to_string(),
-        McpOAuthStatus::Error { message } => format!("error: {message}"),
     }
 }
