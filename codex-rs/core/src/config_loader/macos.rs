@@ -60,7 +60,8 @@ pub(super) fn with_test_managed_preferences_override<R>(
         Err(poisoned) => poisoned.into_inner(),
     };
 
-    let previous = replace_test_managed_preferences_override(value.map(std::string::ToString::to_string));
+    let previous =
+        replace_test_managed_preferences_override(value.map(std::string::ToString::to_string));
     let result = catch_unwind(AssertUnwindSafe(f));
     replace_test_managed_preferences_override(previous);
     drop(serializer_guard);

@@ -258,14 +258,13 @@ fn load_layered_config_with_cli_overrides(
     codex_home: &Path,
     cli_overrides: Vec<(String, TomlValue)>,
 ) -> std::io::Result<TomlValue> {
+    // Apply CLI overrides immediately so that file-based overrides and managed
+    // preferences still have the opportunity to take precedence over them.
     let crate::config_loader::LoadedConfigLayers {
         mut base,
         managed_config,
         managed_preferences,
     } = crate::config_loader::load_config_layers(codex_home)?;
-
-    // Apply CLI overrides immediately so that file-based overrides and managed
-    // preferences still have the opportunity to take precedence over them.
     for (path, value) in cli_overrides.into_iter() {
         apply_toml_override(&mut base, &path, value);
     }

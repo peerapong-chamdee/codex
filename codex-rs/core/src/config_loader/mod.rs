@@ -1,9 +1,10 @@
 #[cfg(target_os = "macos")]
 mod macos;
 
+use std::future::Future;
 use std::io;
 use std::path::Path;
-use std::thread;
+use tokio::fs;
 use toml::Value as TomlValue;
 
 const CONFIG_TOML_FILE: &str = "config.toml";
@@ -49,24 +50,23 @@ pub fn load_config_as_toml(codex_home: &Path) -> io::Result<TomlValue> {
 }
 
 pub(crate) fn load_config_layers(codex_home: &Path) -> io::Result<LoadedConfigLayers> {
+    block_on_config_loader(load_config_layers_async(codex_home))
+}
+
+async fn load_config_layers_async(codex_home: &Path) -> io::Result<LoadedConfigLayers> {
     let user_config_path = codex_home.join(CONFIG_TOML_FILE);
     let managed_config_path = codex_home.join(MANAGED_CONFIG_TOML_FILE);
 
-    thread::scope(|scope| {
-        let user_handle = scope.spawn(|| read_config_from_path(&user_config_path, true));
-        let managed_config_handle =
-            scope.spawn(move || read_config_from_path(&managed_config_path, false));
-        let managed_handle = scope.spawn(load_managed_admin_config);
+    let (user_config, managed_config, managed_preferences) = tokio::try_join!(
+        read_config_from_path(&user_config_path, true),
+        read_config_from_path(&managed_config_path, false),
+        load_managed_admin_config_async(),
+    )?;
 
-        let user_config = join_config_result(user_handle, "user config.toml")?;
-        let managed_config = join_config_result(managed_config_handle, "managed_config.toml")?;
-        let managed_preferences = join_config_result(managed_handle, "managed preferences")?;
-
-        Ok(LoadedConfigLayers {
-            base: user_config.unwrap_or_else(default_empty_table),
-            managed_config,
-            managed_preferences,
-        })
+    Ok(LoadedConfigLayers {
+        base: user_config.unwrap_or_else(default_empty_table),
+        managed_config,
+        managed_preferences,
     })
 }
 
@@ -74,29 +74,11 @@ fn default_empty_table() -> TomlValue {
     TomlValue::Table(Default::default())
 }
 
-fn join_config_result(
-    handle: thread::ScopedJoinHandle<'_, io::Result<Option<TomlValue>>>,
-    label: &str,
+async fn read_config_from_path(
+    path: &Path,
+    log_missing_as_info: bool,
 ) -> io::Result<Option<TomlValue>> {
-    match handle.join() {
-        Ok(result) => result,
-        Err(panic) => {
-            if let Some(msg) = panic.downcast_ref::<&str>() {
-                tracing::error!("Configuration loader for {label} panicked: {msg}");
-            } else if let Some(msg) = panic.downcast_ref::<String>() {
-                tracing::error!("Configuration loader for {label} panicked: {msg}");
-            } else {
-                tracing::error!("Configuration loader for {label} panicked");
-            }
-            Err(io::Error::other(format!(
-                "Failed to load {label} configuration"
-            )))
-        }
-    }
-}
-
-fn read_config_from_path(path: &Path, log_missing_as_info: bool) -> io::Result<Option<TomlValue>> {
-    match std::fs::read_to_string(path) {
+    match fs::read_to_string(path).await {
         Ok(contents) => match toml::from_str::<TomlValue>(&contents) {
             Ok(value) => Ok(Some(value)),
             Err(err) => {
@@ -119,7 +101,58 @@ fn read_config_from_path(path: &Path, log_missing_as_info: bool) -> io::Result<O
     }
 }
 
-/// Recursively merge `overlay` into `base`, preserving nested tables.
+async fn load_managed_admin_config_async() -> io::Result<Option<TomlValue>> {
+    #[cfg(target_os = "macos")]
+    {
+        match tokio::task::spawn_blocking(load_managed_admin_config).await {
+            Ok(result) => result,
+            Err(join_error) => {
+                match join_error.try_into_panic() {
+                    Ok(panic) => {
+                        if let Some(msg) = panic.downcast_ref::<&str>() {
+                            tracing::error!(
+                                "Configuration loader for managed preferences panicked: {msg}"
+                            );
+                        } else if let Some(msg) = panic.downcast_ref::<String>() {
+                            tracing::error!(
+                                "Configuration loader for managed preferences panicked: {msg}"
+                            );
+                        } else {
+                            tracing::error!(
+                                "Configuration loader for managed preferences panicked"
+                            );
+                        }
+                    }
+                    Err(join_error) => {
+                        tracing::error!(
+                            "Configuration loader for managed preferences failed: {join_error}"
+                        );
+                    }
+                }
+                Err(io::Error::other(
+                    "Failed to load managed preferences configuration",
+                ))
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        load_managed_admin_config()
+    }
+}
+
+fn block_on_config_loader<F, T>(future: F) -> io::Result<T>
+where
+    F: Future<Output = io::Result<T>>,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(future)
+}
+
+//  Merge config `overlay` into `base` config TomlValue, with `overlay` taking precedence.
 pub(crate) fn merge_toml_values(base: &mut TomlValue, overlay: &TomlValue) {
     if let TomlValue::Table(overlay_table) = overlay
         && let TomlValue::Table(base_table) = base
