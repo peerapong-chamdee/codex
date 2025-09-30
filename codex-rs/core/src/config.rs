@@ -1377,7 +1377,6 @@ exclude_slash_tmp = true
         )?;
 
         assert_eq!(cfg.model.as_deref(), Some("managed_config"));
-        assert_eq!(cfg.model.as_deref(), Some("override"));
         Ok(())
     }
 
