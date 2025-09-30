@@ -31,12 +31,25 @@ use crate::find_codex_home::find_codex_home;
 
 const KEYRING_SERVICE: &str = "Codex MCP Credentials";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StoredOAuthTokens {
     pub server_name: String,
     pub url: String,
     pub client_id: String,
-    pub token_response: OAuthTokenResponse,
+    pub token_response: WrappedOAuthTokenResponse,
+}
+
+/// Wrap OAuthTokenResponse to allow for partial equality comparison.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WrappedOAuthTokenResponse(pub OAuthTokenResponse);
+
+impl PartialEq for WrappedOAuthTokenResponse {
+    fn eq(&self, other: &Self) -> bool {
+        match (serde_json::to_string(self), serde_json::to_string(other)) {
+            (Ok(s1), Ok(s2)) => s1 == s2,
+            _ => false,
+        }
+    }
 }
 
 pub fn load_oauth_tokens(server_name: &str) -> Result<Option<StoredOAuthTokens>> {
@@ -116,7 +129,7 @@ struct OAuthRuntimeInner {
     server_name: String,
     url: String,
     authorization_manager: Arc<Mutex<AuthorizationManager>>,
-    last_serialized: Mutex<Option<String>>,
+    last_credentials: Mutex<Option<StoredOAuthTokens>>,
 }
 
 impl OAuthRuntime {
@@ -124,18 +137,20 @@ impl OAuthRuntime {
         server_name: String,
         url: String,
         manager: Arc<Mutex<AuthorizationManager>>,
-        initial_serialized: Option<String>,
+        initial_credentials: Option<StoredOAuthTokens>,
     ) -> Self {
         Self {
             inner: Arc::new(OAuthRuntimeInner {
                 server_name,
                 url,
                 authorization_manager: manager,
-                last_serialized: Mutex::new(initial_serialized),
+                last_credentials: Mutex::new(initial_credentials),
             }),
         }
     }
 
+    /// Persists the latest stored credentials if they have changed.
+    /// Deletes the credentials if they are no longer present.
     pub(crate) async fn persist_if_needed(&self) -> Result<()> {
         let (client_id, maybe_credentials) = {
             let manager = self.inner.authorization_manager.clone();
@@ -149,17 +164,16 @@ impl OAuthRuntime {
                     server_name: self.inner.server_name.clone(),
                     url: self.inner.url.clone(),
                     client_id,
-                    token_response: credentials.clone(),
+                    token_response: WrappedOAuthTokenResponse(credentials.clone()),
                 };
-                let serialized = serde_json::to_string(&stored)?;
-                let mut last_serialized = self.inner.last_serialized.lock().await;
-                if last_serialized.as_deref() != Some(serialized.as_str()) {
+                let mut last_credentials = self.inner.last_credentials.lock().await;
+                if last_credentials.as_ref() != Some(&stored) {
                     save_oauth_tokens(&self.inner.server_name, &stored)?;
-                    *last_serialized = Some(serialized);
+                    *last_credentials = Some(stored);
                 }
             }
             None => {
-                let mut last_serialized = self.inner.last_serialized.lock().await;
+                let mut last_serialized = self.inner.last_credentials.lock().await;
                 if last_serialized.take().is_some()
                     && let Err(error) = delete_oauth_tokens(&self.inner.server_name)
                 {
@@ -237,7 +251,7 @@ fn load_oauth_tokens_from_file(server_name: &str) -> Result<Option<StoredOAuthTo
             server_name: entry.server_name.clone(),
             url: entry.server_url.clone(),
             client_id: entry.client_id.clone(),
-            token_response,
+            token_response: WrappedOAuthTokenResponse(token_response),
         };
 
         return Ok(Some(stored));
@@ -254,13 +268,14 @@ fn save_oauth_tokens_to_file(tokens: &StoredOAuthTokens) -> Result<()> {
         server_name: tokens.server_name.clone(),
         server_url: tokens.url.clone(),
         client_id: tokens.client_id.clone(),
-        access_token: tokens.token_response.access_token().secret().to_string(),
-        expires_at: compute_expires_at_millis(&tokens.token_response),
+        access_token: tokens.token_response.0.access_token().secret().to_string(),
+        expires_at: compute_expires_at_millis(&tokens.token_response.0),
         refresh_token: tokens
             .token_response
+            .0
             .refresh_token()
             .map(|token| token.secret().to_string()),
-        scope: scope_string(&tokens.token_response),
+        scope: scope_string(&tokens.token_response.0),
     };
 
     store.insert(key, entry);

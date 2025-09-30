@@ -65,7 +65,7 @@ enum PendingTransport {
     StreamableHttp(StreamableHttpClientTransport<reqwest::Client>),
     StreamableHttpWithAuth {
         transport: StreamableHttpClientTransport<AuthClient<reqwest::Client>>,
-        oauth: OAuthRuntime,
+        oauth_runtime: OAuthRuntime,
     },
 }
 
@@ -135,10 +135,11 @@ impl RmcpClient {
     ) -> Result<Self> {
         let transport = match config.auth.take() {
             Some(StreamableHttpAuth::Oauth(oauth_config)) => {
-                let (transport, runtime) = create_oauth_transport(&config, *oauth_config).await?;
+                let (transport, oauth_runtime) =
+                    create_oauth_transport_and_runtime(&config, *oauth_config).await?;
                 PendingTransport::StreamableHttpWithAuth {
                     transport,
-                    oauth: runtime,
+                    oauth_runtime,
                 }
             }
             Some(StreamableHttpAuth::BearerToken(token)) => {
@@ -183,7 +184,10 @@ impl RmcpClient {
                         service::serve_client(client_handler.clone(), transport).boxed(),
                         None,
                     ),
-                    Some(PendingTransport::StreamableHttpWithAuth { transport, oauth }) => (
+                    Some(PendingTransport::StreamableHttpWithAuth {
+                        transport,
+                        oauth_runtime: oauth,
+                    }) => (
                         service::serve_client(client_handler.clone(), transport).boxed(),
                         Some(oauth),
                     ),
@@ -287,7 +291,7 @@ impl RmcpClient {
     }
 }
 
-async fn create_oauth_transport(
+async fn create_oauth_transport_and_runtime(
     config: &StreamableHttpClientConfig,
     oauth_config: OAuthClientConfig,
 ) -> Result<(
@@ -297,11 +301,11 @@ async fn create_oauth_transport(
     let http_client = reqwest::Client::builder().build()?;
     let mut oauth_state = OAuthState::new(config.url.clone(), Some(http_client.clone())).await?;
 
-    let initial_serialized = if let Some(stored) = &oauth_config.stored_tokens {
+    let initial_credentials = if let Some(stored) = &oauth_config.stored_tokens {
         oauth_state
-            .set_credentials(&stored.client_id, stored.token_response.clone())
+            .set_credentials(&stored.client_id, stored.token_response.0.clone())
             .await?;
-        Some(serde_json::to_string(stored)?)
+        Some(stored)
     } else {
         None
     };
@@ -326,7 +330,7 @@ async fn create_oauth_transport(
         config.server_name.clone(),
         config.url.clone(),
         auth_manager,
-        initial_serialized,
+        initial_credentials.cloned(),
     );
 
     Ok((transport, runtime))

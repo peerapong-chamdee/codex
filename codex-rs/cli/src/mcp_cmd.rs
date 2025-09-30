@@ -18,6 +18,7 @@ use codex_core::config_types::McpServerConfig;
 use codex_core::config_types::McpServerTransportConfig;
 use codex_protocol::protocol::McpOAuthStatus;
 use codex_rmcp_client::StoredOAuthTokens;
+use codex_rmcp_client::WrappedOAuthTokenResponse;
 use codex_rmcp_client::delete_oauth_tokens;
 use codex_rmcp_client::load_oauth_tokens;
 use codex_rmcp_client::save_oauth_tokens;
@@ -641,7 +642,7 @@ async fn perform_oauth_login(server_name: &str, server_url: &str) -> Result<()> 
         server_name: server_name.to_string(),
         url: server_url.to_string(),
         client_id,
-        token_response: credentials,
+        token_response: WrappedOAuthTokenResponse(credentials),
     };
     save_oauth_tokens(server_name, &stored)?;
 
