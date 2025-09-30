@@ -7,13 +7,13 @@ use std::thread;
 use toml::Value as TomlValue;
 
 const CONFIG_TOML_FILE: &str = "config.toml";
-const CONFIG_OVERRIDE_TOML_FILE: &str = "config_override.toml";
+const MANAGED_CONFIG_TOML_FILE: &str = "managed_config.toml";
 
 #[derive(Debug)]
 pub(crate) struct LoadedConfigLayers {
     pub base: TomlValue,
-    pub override_layer: Option<TomlValue>,
-    pub managed_layer: Option<TomlValue>,
+    pub managed_config: Option<TomlValue>,
+    pub managed_preferences: Option<TomlValue>,
 }
 
 // Configuration layering pipeline (top overrides bottom):
@@ -24,7 +24,7 @@ pub(crate) struct LoadedConfigLayers {
 //                    ^
 //                    |
 //        +-------------------------+
-//        |  config_override.toml   |
+//        |  managed_config.toml   |
 //        +-------------------------+
 //                    ^
 //                    |
@@ -37,11 +37,11 @@ pub(crate) struct LoadedConfigLayers {
 pub fn load_config_as_toml(codex_home: &Path) -> io::Result<TomlValue> {
     let LoadedConfigLayers {
         mut base,
-        override_layer,
-        managed_layer,
+        managed_config,
+        managed_preferences,
     } = load_config_layers(codex_home)?;
 
-    for overlay in [override_layer, managed_layer].into_iter().flatten() {
+    for overlay in [managed_config, managed_preferences].into_iter().flatten() {
         merge_toml_values(&mut base, &overlay);
     }
 
@@ -50,22 +50,22 @@ pub fn load_config_as_toml(codex_home: &Path) -> io::Result<TomlValue> {
 
 pub(crate) fn load_config_layers(codex_home: &Path) -> io::Result<LoadedConfigLayers> {
     let user_config_path = codex_home.join(CONFIG_TOML_FILE);
-    let override_config_path = codex_home.join(CONFIG_OVERRIDE_TOML_FILE);
+    let managed_config_path = codex_home.join(MANAGED_CONFIG_TOML_FILE);
 
     thread::scope(|scope| {
         let user_handle = scope.spawn(|| read_config_from_path(&user_config_path, true));
-        let override_handle =
-            scope.spawn(move || read_config_from_path(&override_config_path, false));
+        let managed_config_handle =
+            scope.spawn(move || read_config_from_path(&managed_config_path, false));
         let managed_handle = scope.spawn(load_managed_admin_config);
 
         let user_config = join_config_result(user_handle, "user config.toml")?;
-        let override_config = join_config_result(override_handle, "config_override.toml")?;
-        let managed_config = join_config_result(managed_handle, "managed preferences")?;
+        let managed_config = join_config_result(managed_config_handle, "managed_config.toml")?;
+        let managed_preferences = join_config_result(managed_handle, "managed preferences")?;
 
         Ok(LoadedConfigLayers {
             base: user_config.unwrap_or_else(default_empty_table),
-            override_layer: override_config,
-            managed_layer: managed_config,
+            managed_config,
+            managed_preferences,
         })
     })
 }
@@ -152,7 +152,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn merges_override_layer_on_top() {
+    fn merges_managed_config_layer_on_top() {
         let run_test = || {
             let tmp = tempdir().expect("tempdir");
             std::fs::write(
@@ -165,15 +165,15 @@ value = "base"
             )
             .expect("write base");
             std::fs::write(
-                tmp.path().join(CONFIG_OVERRIDE_TOML_FILE),
+                tmp.path().join(MANAGED_CONFIG_TOML_FILE),
                 r#"foo = 2
 
 [nested]
-value = "override"
+value = "managed_config"
 extra = true
 "#,
             )
-            .expect("write override");
+            .expect("write managed config");
 
             let loaded = load_config_as_toml(tmp.path()).expect("load config");
             let table = loaded.as_table().expect("top-level table expected");
@@ -185,7 +185,7 @@ extra = true
                 .expect("nested");
             assert_eq!(
                 nested.get("value"),
-                Some(&TomlValue::String("override".to_string()))
+                Some(&TomlValue::String("managed_config".to_string()))
             );
             assert_eq!(nested.get("extra"), Some(&TomlValue::Boolean(true)));
         };
@@ -201,12 +201,26 @@ extra = true
     fn returns_empty_when_all_layers_missing() {
         let run_test = || {
             let tmp = tempdir().expect("tempdir");
-            let loaded = load_config_as_toml(tmp.path()).expect("load config");
-            let table = loaded.as_table().expect("top-level table expected");
+            let layers = load_config_layers(tmp.path()).expect("load layers");
+            let base_table = layers.base.as_table().expect("base table expected");
             assert!(
-                table.is_empty(),
-                "expected empty table when configs missing"
+                base_table.is_empty(),
+                "expected empty base layer when configs missing"
             );
+            assert!(
+                layers.managed_config.is_none(),
+                "managed config layer should be absent when file missing"
+            );
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let loaded = load_config_as_toml(tmp.path()).expect("load config");
+                let table = loaded.as_table().expect("top-level table expected");
+                assert!(
+                    table.is_empty(),
+                    "expected empty table when configs missing"
+                );
+            }
         };
 
         #[cfg(target_os = "macos")]
@@ -238,13 +252,13 @@ value = "base"
             )
             .expect("write base");
             std::fs::write(
-                tmp.path().join(CONFIG_OVERRIDE_TOML_FILE),
+                tmp.path().join(MANAGED_CONFIG_TOML_FILE),
                 r#"[nested]
-value = "override"
+value = "managed_config"
 flag = true
 "#,
             )
-            .expect("write override");
+            .expect("write managed config");
 
             let loaded = load_config_as_toml(tmp.path()).expect("load config");
             let nested = loaded

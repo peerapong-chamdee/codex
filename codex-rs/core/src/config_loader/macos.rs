@@ -22,10 +22,17 @@ use std::sync::OnceLock;
 
 #[cfg(test)]
 static TEST_MANAGED_PREFERENCES_OVERRIDE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+#[cfg(test)]
+static TEST_MANAGED_PREFERENCES_SERIALIZER: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[cfg(test)]
 fn test_managed_preferences_override_storage() -> &'static Mutex<Option<String>> {
     TEST_MANAGED_PREFERENCES_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn test_managed_preferences_serializer() -> &'static Mutex<()> {
+    TEST_MANAGED_PREFERENCES_SERIALIZER.get_or_init(|| Mutex::new(()))
 }
 
 #[cfg(test)]
@@ -50,9 +57,15 @@ pub(super) fn with_test_managed_preferences_override<R>(
     value: Option<&str>,
     f: impl FnOnce() -> R + std::panic::UnwindSafe,
 ) -> R {
+    let serializer_guard = match test_managed_preferences_serializer().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
     let previous = replace_test_managed_preferences_override(value.map(|s| s.to_string()));
     let result = catch_unwind(AssertUnwindSafe(f));
     replace_test_managed_preferences_override(previous);
+    drop(serializer_guard);
     match result {
         Ok(output) => output,
         Err(payload) => resume_unwind(payload),

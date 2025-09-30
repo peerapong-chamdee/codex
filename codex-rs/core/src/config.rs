@@ -260,8 +260,8 @@ fn load_layered_config_with_cli_overrides(
 ) -> std::io::Result<TomlValue> {
     let crate::config_loader::LoadedConfigLayers {
         mut base,
-        override_layer,
-        managed_layer,
+        managed_config,
+        managed_preferences,
     } = crate::config_loader::load_config_layers(codex_home)?;
 
     // Apply CLI overrides immediately so that file-based overrides and managed
@@ -271,8 +271,8 @@ fn load_layered_config_with_cli_overrides(
     }
 
     // Overlay filesystem and managed layers in priority order
-    // (config.toml < config_override.toml < managed preferences).
-    for overlay in [override_layer, managed_layer].into_iter().flatten() {
+    // (config.toml < managed_config.toml < managed preferences).
+    for overlay in [managed_config, managed_preferences].into_iter().flatten() {
         crate::config_loader::merge_toml_values(&mut base, &overlay);
     }
 
@@ -1359,7 +1359,7 @@ exclude_slash_tmp = true
     }
 
     #[test]
-    fn config_override_wins_over_cli_overrides() -> anyhow::Result<()> {
+    fn managed_config_wins_over_cli_overrides() -> anyhow::Result<()> {
         let codex_home = TempDir::new()?;
 
         std::fs::write(
@@ -1367,8 +1367,8 @@ exclude_slash_tmp = true
             "model = \"base\"\n",
         )?;
         std::fs::write(
-            codex_home.path().join("config_override.toml"),
-            "model = \"override\"\n",
+            codex_home.path().join("managed_config.toml"),
+            "model = \"managed_config\"\n",
         )?;
 
         let cfg = load_config_as_toml_with_cli_overrides(
@@ -1376,6 +1376,7 @@ exclude_slash_tmp = true
             vec![("model".to_string(), TomlValue::String("cli".to_string()))],
         )?;
 
+        assert_eq!(cfg.model.as_deref(), Some("managed_config"));
         assert_eq!(cfg.model.as_deref(), Some("override"));
         Ok(())
     }
