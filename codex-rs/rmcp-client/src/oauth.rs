@@ -52,7 +52,7 @@ impl PartialEq for WrappedOAuthTokenResponse {
     }
 }
 
-pub fn load_oauth_tokens(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
+pub(crate) fn load_oauth_tokens(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
     match Entry::new(KEYRING_SERVICE, server_name) {
         Ok(entry) => match entry.get_password() {
             Ok(serialized) => {

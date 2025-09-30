@@ -16,11 +16,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_mcp_client::McpClient;
-use codex_rmcp_client::OAuthClientConfig;
 use codex_rmcp_client::RmcpClient;
-use codex_rmcp_client::StreamableHttpAuth;
-use codex_rmcp_client::StreamableHttpClientConfig;
-use codex_rmcp_client::load_oauth_tokens;
 use mcp_types::ClientCapabilities;
 use mcp_types::Implementation;
 use mcp_types::Tool;
@@ -127,11 +123,15 @@ impl McpClientAdapter {
     }
 
     async fn new_streamable_http_client(
-        config: StreamableHttpClientConfig,
+        server_name: String,
+        url: String,
+        bearer_token: Option<String>,
         params: mcp_types::InitializeRequestParams,
         startup_timeout: Duration,
     ) -> Result<Self> {
-        let client = Arc::new(RmcpClient::new_streamable_http_client(config).await?);
+        let client = Arc::new(
+            RmcpClient::new_streamable_http_client(&server_name, &url, bearer_token).await?,
+        );
         client.initialize(params, Some(startup_timeout)).await?;
         Ok(McpClientAdapter::Rmcp(client))
     }
@@ -244,11 +244,11 @@ impl McpConnectionManager {
                     protocol_version: mcp_types::MCP_SCHEMA_VERSION.to_owned(),
                 };
 
-                let result: Result<ManagedClient, anyhow::Error> = match transport {
+                let client = match transport {
                     McpServerTransportConfig::Stdio { command, args, env } => {
                         let command_os: OsString = command.into();
                         let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
-                        match McpClientAdapter::new_stdio_client(
+                        McpClientAdapter::new_stdio_client(
                             use_rmcp_client,
                             command_os,
                             args_os,
@@ -257,77 +257,48 @@ impl McpConnectionManager {
                             startup_timeout,
                         )
                         .await
-                        {
-                            Ok(client) => Ok(ManagedClient {
-                                client,
-                                startup_timeout,
-                                tool_timeout: Some(tool_timeout),
-                            }),
-                            Err(err) => Err(err),
-                        }
                     }
                     McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
-                        let stored_tokens = match load_oauth_tokens(&server_name, &url) {
-                            Ok(tokens) => tokens,
-                            Err(err) => {
-                                let message = err.to_string();
-                                warn!(
-                                    "failed to read tokens for server `{server_name}`: {message}"
-                                );
-                                None
-                            }
-                        };
-                        let auth = if let Some(tokens) = stored_tokens.clone() {
-                            Some(StreamableHttpAuth::Oauth(Box::new(OAuthClientConfig {
-                                stored_tokens: Some(tokens),
-                            })))
-                        } else {
-                            bearer_token.map(|t| StreamableHttpAuth::BearerToken(Box::new(t)))
-                        };
-                        let stream_config = StreamableHttpClientConfig {
-                            server_name: server_name.clone(),
+                        McpClientAdapter::new_streamable_http_client(
+                            server_name.clone(),
                             url,
-                            auth,
-                        };
-
-                        match McpClientAdapter::new_streamable_http_client(
-                            stream_config,
+                            bearer_token,
                             params,
                             startup_timeout,
                         )
                         .await
-                        {
-                            Ok(client) => Ok(ManagedClient {
-                                client,
-                                startup_timeout,
-                                tool_timeout: Some(tool_timeout),
-                            }),
-                            Err(err) => Err(err),
-                        }
                     }
-                };
+                }
+                .map(|c| (c, startup_timeout));
 
-                (server_name, result)
+                ((server_name, tool_timeout), client)
             });
         }
 
         let mut clients: HashMap<String, ManagedClient> = HashMap::with_capacity(join_set.len());
 
         while let Some(res) = join_set.join_next().await {
-            let (server_name, result) = match res {
+            let ((server_name, tool_timeout), client_res) = match res {
                 Ok(result) => result,
                 Err(e) => {
-                    warn!("MCP server failed to start: {e:#}");
+                    warn!("Task panic when starting MCP server: {e:#}");
                     continue;
                 }
             };
 
-            match result {
-                Ok(managed_client) => {
-                    clients.insert(server_name, managed_client);
+            match client_res {
+                Ok((client, startup_timeout)) => {
+                    clients.insert(
+                        server_name,
+                        ManagedClient {
+                            client,
+                            startup_timeout,
+                            tool_timeout: Some(tool_timeout),
+                        },
+                    );
                 }
-                Err(error) => {
-                    errors.insert(server_name, error);
+                Err(e) => {
+                    errors.insert(server_name, e);
                 }
             }
         }

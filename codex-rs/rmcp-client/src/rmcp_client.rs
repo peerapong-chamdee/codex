@@ -33,6 +33,7 @@ use tokio::time;
 use tracing::info;
 use tracing::warn;
 
+use crate::load_oauth_tokens;
 use crate::logging_client_handler::LoggingClientHandler;
 use crate::oauth::OAuthRuntime;
 use crate::oauth::StoredOAuthTokens;
@@ -42,28 +43,12 @@ use crate::utils::convert_to_rmcp;
 use crate::utils::create_env_for_mcp_server;
 use crate::utils::run_with_timeout;
 
-#[derive(Debug, Clone)]
-pub struct StreamableHttpClientConfig {
-    pub server_name: String,
-    pub url: String,
-    pub auth: Option<StreamableHttpAuth>,
-}
-
-#[derive(Debug, Clone)]
-pub struct OAuthClientConfig {
-    pub stored_tokens: Option<StoredOAuthTokens>,
-}
-
-#[derive(Debug, Clone)]
-pub enum StreamableHttpAuth {
-    BearerToken(Box<String>),
-    Oauth(Box<OAuthClientConfig>),
-}
-
 enum PendingTransport {
     ChildProcess(TokioChildProcess),
-    StreamableHttp(StreamableHttpClientTransport<reqwest::Client>),
-    StreamableHttpWithAuth {
+    StreamableHttp {
+        transport: StreamableHttpClientTransport<reqwest::Client>,
+    },
+    StreamableHttpWithOAuth {
         transport: StreamableHttpClientTransport<AuthClient<reqwest::Client>>,
         oauth_runtime: OAuthRuntime,
     },
@@ -131,30 +116,33 @@ impl RmcpClient {
     }
 
     pub async fn new_streamable_http_client(
-        mut config: StreamableHttpClientConfig,
+        server_name: &str,
+        url: &str,
+        bearer_token: Option<String>,
     ) -> Result<Self> {
-        let transport = match config.auth.take() {
-            Some(StreamableHttpAuth::Oauth(oauth_config)) => {
-                let (transport, oauth_runtime) =
-                    create_oauth_transport_and_runtime(&config, *oauth_config).await?;
-                PendingTransport::StreamableHttpWithAuth {
-                    transport,
-                    oauth_runtime,
-                }
-            }
-            Some(StreamableHttpAuth::BearerToken(token)) => {
-                let http_config = StreamableHttpClientTransportConfig::with_uri(config.url.clone())
-                    .auth_header(format!("Bearer {token}"));
-                let transport = StreamableHttpClientTransport::from_config(http_config);
-                PendingTransport::StreamableHttp(transport)
-            }
-            None => {
-                let http_config = StreamableHttpClientTransportConfig::with_uri(config.url.clone());
-                let transport = StreamableHttpClientTransport::from_config(http_config);
-                PendingTransport::StreamableHttp(transport)
+        let initial_tokens = match load_oauth_tokens(server_name, url) {
+            Ok(tokens) => tokens,
+            Err(err) => {
+                warn!("failed to read tokens for server `{server_name}`: {err}");
+                None
             }
         };
+        let transport = if let Some(initial_tokens) = initial_tokens.clone() {
+            let (transport, oauth_runtime) =
+                create_oauth_transport_and_runtime(server_name, url, initial_tokens).await?;
+            PendingTransport::StreamableHttpWithOAuth {
+                transport,
+                oauth_runtime,
+            }
+        } else {
+            let mut http_config = StreamableHttpClientTransportConfig::with_uri(url.to_string());
+            if let Some(bearer_token) = bearer_token {
+                http_config = http_config.auth_header(format!("Bearer {bearer_token}"));
+            }
 
+            let transport = StreamableHttpClientTransport::from_config(http_config);
+            PendingTransport::StreamableHttp { transport }
+        };
         Ok(Self {
             state: Mutex::new(ClientState::Connecting {
                 transport: Some(transport),
@@ -180,16 +168,16 @@ impl RmcpClient {
                         service::serve_client(client_handler.clone(), transport).boxed(),
                         None,
                     ),
-                    Some(PendingTransport::StreamableHttp(transport)) => (
+                    Some(PendingTransport::StreamableHttp { transport }) => (
                         service::serve_client(client_handler.clone(), transport).boxed(),
                         None,
                     ),
-                    Some(PendingTransport::StreamableHttpWithAuth {
+                    Some(PendingTransport::StreamableHttpWithOAuth {
                         transport,
-                        oauth_runtime: oauth,
+                        oauth_runtime,
                     }) => (
                         service::serve_client(client_handler.clone(), transport).boxed(),
-                        Some(oauth),
+                        Some(oauth_runtime),
                     ),
                     None => return Err(anyhow!("client already initializing")),
                 },
@@ -292,23 +280,22 @@ impl RmcpClient {
 }
 
 async fn create_oauth_transport_and_runtime(
-    config: &StreamableHttpClientConfig,
-    oauth_config: OAuthClientConfig,
+    server_name: &str,
+    url: &str,
+    initial_tokens: StoredOAuthTokens,
 ) -> Result<(
     StreamableHttpClientTransport<AuthClient<reqwest::Client>>,
     OAuthRuntime,
 )> {
     let http_client = reqwest::Client::builder().build()?;
-    let mut oauth_state = OAuthState::new(config.url.clone(), Some(http_client.clone())).await?;
+    let mut oauth_state = OAuthState::new(url.to_string(), Some(http_client.clone())).await?;
 
-    let initial_credentials = if let Some(stored) = &oauth_config.stored_tokens {
-        oauth_state
-            .set_credentials(&stored.client_id, stored.token_response.0.clone())
-            .await?;
-        Some(stored)
-    } else {
-        None
-    };
+    oauth_state
+        .set_credentials(
+            &initial_tokens.client_id,
+            initial_tokens.token_response.0.clone(),
+        )
+        .await?;
 
     let manager = match oauth_state {
         OAuthState::Authorized(manager) => manager,
@@ -323,14 +310,14 @@ async fn create_oauth_transport_and_runtime(
 
     let transport = StreamableHttpClientTransport::with_client(
         auth_client,
-        StreamableHttpClientTransportConfig::with_uri(config.url.clone()),
+        StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
 
     let runtime = OAuthRuntime::new(
-        config.server_name.clone(),
-        config.url.clone(),
+        server_name.to_string(),
+        url.to_string(),
         auth_manager,
-        initial_credentials.cloned(),
+        Some(initial_tokens),
     );
 
     Ok((transport, runtime))
