@@ -246,11 +246,17 @@ fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutArgs) ->
 
     let LogoutArgs { name } = logout_args;
 
-    if !config.mcp_servers.contains_key(&name) {
-        println!("No MCP server named '{name}' found in configuration.");
-    }
+    let server = config
+        .mcp_servers
+        .get(&name)
+        .ok_or_else(|| anyhow!("No MCP server named '{name}' found in configuration."))?;
 
-    match delete_oauth_tokens(&name) {
+    let url = match &server.transport {
+        McpServerTransportConfig::StreamableHttp { url, .. } => url.clone(),
+        _ => bail!("OAuth logout is only supported for streamable_http transports."),
+    };
+
+    match delete_oauth_tokens(&name, &url) {
         Ok(true) => println!("Removed OAuth credentials for '{name}'."),
         Ok(false) => println!("No OAuth credentials stored for '{name}'."),
         Err(err) => return Err(anyhow!("failed to delete OAuth credentials: {err}")),
