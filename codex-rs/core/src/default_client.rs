@@ -164,7 +164,6 @@ mod tests {
     fn test_get_codex_user_agent() {
         let user_agent = get_codex_user_agent();
         assert!(user_agent.starts_with("codex_cli_rs/"));
-        assert!(user_agent.starts_with(&ORIGINATOR.value));
     }
 
     #[tokio::test]

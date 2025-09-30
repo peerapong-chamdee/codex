@@ -24,6 +24,7 @@ use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_with_timeout;
 use escargot::CargoBuild;
 use serde_json::Value;
+use serial_test::serial;
 use tempfile::tempdir;
 use tokio::net::TcpStream;
 use tokio::process::Child;
@@ -347,7 +348,7 @@ async fn streamable_http_with_oauth_round_trip() -> anyhow::Result<()> {
     let server_name = "rmcp_http_oauth";
     let tool_name = format!("{server_name}__echo");
 
-    mount_sse_once(
+    mount_sse_once_match(
         &server,
         any(),
         responses::sse(vec![
@@ -360,7 +361,7 @@ async fn streamable_http_with_oauth_round_trip() -> anyhow::Result<()> {
         ]),
     )
     .await;
-    mount_sse_once(
+    mount_sse_once_match(
         &server,
         any(),
         responses::sse(vec![
