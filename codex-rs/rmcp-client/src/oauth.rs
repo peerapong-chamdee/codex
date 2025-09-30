@@ -169,11 +169,8 @@ fn save_oauth_tokens_with_store<C: CredentialStore>(
     let serialized = serde_json::to_string(tokens).context("failed to serialize OAuth tokens")?;
 
     let key = compute_store_key(server_name, &tokens.url)?;
-    // DO NOT SUBMIT
-    println!("[DEBUG] saving OAuth tokens to keyring: {key}: {serialized}");
     match store.save(KEYRING_SERVICE, &key, &serialized) {
         Ok(()) => {
-            println!("saved OAuth tokens to keyring: {serialized}");
             if let Err(error) = delete_oauth_tokens_from_file(&key) {
                 warn!("failed to remove OAuth tokens from fallback storage: {error:?}");
             }
