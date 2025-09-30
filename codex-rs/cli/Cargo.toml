@@ -31,7 +31,7 @@ codex-protocol-ts = { workspace = true }
 codex-tui = { workspace = true }
 codex-rmcp-client = { workspace = true }
 ctor = { workspace = true }
-rmcp = { version = "0.7.0", default-features = false, features = ["auth"] }
+rmcp = { workspace = true, default-features = false, features = ["auth"] }
 owo-colors = { workspace = true }
 serde_json = { workspace = true }
 supports-color = { workspace = true }
