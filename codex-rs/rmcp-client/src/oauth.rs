@@ -1,3 +1,21 @@
+//! This file handles all logic related to managing MCP OAuth credentials.
+//! All credentials are stored using the keyring crate which uses os-specific keyring services.
+//! https://crates.io/crates/keyring
+//! macOS: macOS keychain.
+//! Windows: Windows Credential Manager
+//! Linux: DBus-based Secret Service, the kernel keyutils, and a combo of the two
+//! FreeBSD, OpenBSD: DBus-based Secret Service
+//!
+//! For Linux, we use linux-native-async-persistent which uses both keyutils and async-secret-service (see below) for storage.
+//! See the docs for the keyutils_persistent module for a full explanation of why both are used. Because this store uses the
+//! async-secret-service, you must specify the additional features required by that store
+//!
+//! async-secret-service provides access to the DBus-based Secret Service storage on Linux, FreeBSD, and OpenBSD. This is an asynchronous
+//! keystore that always encrypts secrets when they are transferred across the bus. If DBus isn't installed the keystore will fall back to the json
+//! file because we don't use the "vendored" feature.
+//!
+//! If the keyring is not available or fails, we fall back to CODEX_HOME/.credentials.json which is consistent with other coding CLI agents.
+
 use anyhow::Context;
 use anyhow::Result;
 use keyring::Entry;

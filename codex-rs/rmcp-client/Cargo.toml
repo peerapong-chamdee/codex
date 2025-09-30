@@ -14,10 +14,10 @@ axum = { workspace = true, default-features = false, features = [
 ] }
 keyring = { workspace = true, features = [
     "apple-native",
-    "windows-native",
-    "linux-native-async-persistent",
     "crypto-rust",
-    "vendored",
+    "linux-native-async-persistent",
+    "tokio",
+    "windows-native",
 ] }
 mcp-types = { path = "../mcp-types" }
 rmcp = { workspace = true, default-features = false, features = [

@@ -264,7 +264,7 @@ impl RmcpClient {
         match &*guard {
             ClientState::Ready {
                 oauth: Some(runtime),
-                ..
+                service: _,
             } => Some(runtime.clone()),
             _ => None,
         }
