@@ -17,11 +17,10 @@ use anyhow::Result;
 use anyhow::anyhow;
 use codex_mcp_client::McpClient;
 use codex_protocol::protocol::McpOAuthStatus;
-use codex_rmcp_client::OAuthClientConfig as RmcpOAuthClientConfig;
+use codex_rmcp_client::OAuthClientConfig;
 use codex_rmcp_client::RmcpClient;
 use codex_rmcp_client::StreamableHttpAuth;
 use codex_rmcp_client::StreamableHttpClientConfig;
-use codex_rmcp_client::default_oauth_scopes;
 use codex_rmcp_client::load_oauth_tokens;
 use mcp_types::ClientCapabilities;
 use mcp_types::Implementation;
@@ -306,9 +305,8 @@ impl McpConnectionManager {
                     McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
                         let oauth_tokens = stored_tokens.clone();
                         let auth = if let Some(tokens) = oauth_tokens.clone() {
-                            Some(StreamableHttpAuth::Oauth(Box::new(RmcpOAuthClientConfig {
+                            Some(StreamableHttpAuth::Oauth(Box::new(OAuthClientConfig {
                                 stored_tokens: Some(tokens),
-                                scopes: default_oauth_scopes(),
                             })))
                         } else {
                             bearer_token.map(|t| StreamableHttpAuth::BearerToken(Box::new(t)))

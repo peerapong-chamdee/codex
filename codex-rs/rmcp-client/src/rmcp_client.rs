@@ -22,7 +22,6 @@ use rmcp::service::RunningService;
 use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::auth::AuthClient;
-use rmcp::transport::auth::AuthorizationManager;
 use rmcp::transport::auth::OAuthState;
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -35,9 +34,8 @@ use tracing::info;
 use tracing::warn;
 
 use crate::logging_client_handler::LoggingClientHandler;
+use crate::oauth::OAuthRuntime;
 use crate::oauth::StoredOAuthTokens;
-use crate::oauth::delete_tokens;
-use crate::oauth::save_tokens;
 use crate::utils::convert_call_tool_result;
 use crate::utils::convert_to_mcp;
 use crate::utils::convert_to_rmcp;
@@ -54,7 +52,6 @@ pub struct StreamableHttpClientConfig {
 #[derive(Debug, Clone)]
 pub struct OAuthClientConfig {
     pub stored_tokens: Option<StoredOAuthTokens>,
-    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,78 +83,6 @@ enum ClientState {
 /// https://github.com/modelcontextprotocol/rust-sdk
 pub struct RmcpClient {
     state: Mutex<ClientState>,
-}
-
-#[derive(Clone)]
-struct OAuthRuntime {
-    inner: Arc<OAuthRuntimeInner>,
-}
-
-struct OAuthRuntimeInner {
-    server_name: String,
-    url: String,
-    scopes: Vec<String>,
-    authorization_manager: Arc<Mutex<AuthorizationManager>>,
-    last_serialized: Mutex<Option<String>>,
-}
-
-impl OAuthRuntime {
-    fn new(
-        server_name: String,
-        url: String,
-        scopes: Vec<String>,
-        manager: Arc<Mutex<AuthorizationManager>>,
-        initial_serialized: Option<String>,
-    ) -> Self {
-        Self {
-            inner: Arc::new(OAuthRuntimeInner {
-                server_name,
-                url,
-                scopes,
-                authorization_manager: manager,
-                last_serialized: Mutex::new(initial_serialized),
-            }),
-        }
-    }
-
-    async fn persist_if_needed(&self) -> Result<()> {
-        let (client_id, maybe_credentials) = {
-            let manager = self.inner.authorization_manager.clone();
-            let guard = manager.lock().await;
-            guard.get_credentials().await
-        }?;
-
-        match maybe_credentials {
-            Some(credentials) => {
-                let stored = StoredOAuthTokens {
-                    server_name: self.inner.server_name.clone(),
-                    url: self.inner.url.clone(),
-                    client_id,
-                    scopes: self.inner.scopes.clone(),
-                    token_response: credentials.clone(),
-                };
-                let serialized = serde_json::to_string(&stored)?;
-                let mut last_serialized = self.inner.last_serialized.lock().await;
-                if last_serialized.as_deref() != Some(serialized.as_str()) {
-                    save_tokens(&self.inner.server_name, &stored)?;
-                    *last_serialized = Some(serialized);
-                }
-            }
-            None => {
-                let mut last_serialized = self.inner.last_serialized.lock().await;
-                if last_serialized.take().is_some()
-                    && let Err(error) = delete_tokens(&self.inner.server_name)
-                {
-                    warn!(
-                        "failed to remove OAuth tokens for server {}: {error}",
-                        self.inner.server_name
-                    );
-                }
-            }
-        }
-
-        Ok(())
-    }
 }
 
 impl RmcpClient {
@@ -397,16 +322,9 @@ async fn create_oauth_transport(
         StreamableHttpClientTransportConfig::with_uri(config.url.clone()),
     );
 
-    let scopes = if oauth_config.scopes.is_empty() {
-        vec!["mcp".to_string()]
-    } else {
-        oauth_config.scopes
-    };
-
     let runtime = OAuthRuntime::new(
         config.server_name.clone(),
         config.url.clone(),
-        scopes,
         auth_manager,
         initial_serialized,
     );

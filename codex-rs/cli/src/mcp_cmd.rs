@@ -18,7 +18,6 @@ use codex_core::config_types::McpServerConfig;
 use codex_core::config_types::McpServerTransportConfig;
 use codex_protocol::protocol::McpOAuthStatus;
 use codex_rmcp_client::StoredOAuthTokens;
-use codex_rmcp_client::default_oauth_scopes;
 use codex_rmcp_client::delete_oauth_tokens;
 use codex_rmcp_client::load_oauth_tokens;
 use codex_rmcp_client::save_oauth_tokens;
@@ -611,13 +610,8 @@ async fn perform_oauth_login(server_name: &str, server_url: &str) -> Result<()> 
     let (tx, rx) = oneshot::channel();
     spawn_callback_server(server, tx);
 
-    let scopes = default_oauth_scopes();
-    let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
-
     let mut oauth_state = OAuthState::new(server_url, None).await?;
-    oauth_state
-        .start_authorization(&scope_refs, &redirect_uri)
-        .await?;
+    oauth_state.start_authorization(&[], &redirect_uri).await?;
     let auth_url = oauth_state.get_authorization_url().await?;
 
     println!("Authorize `{server_name}` by opening this URL in your browser:\n{auth_url}\n");
@@ -647,7 +641,6 @@ async fn perform_oauth_login(server_name: &str, server_url: &str) -> Result<()> 
         server_name: server_name.to_string(),
         url: server_url.to_string(),
         client_id,
-        scopes,
         token_response: credentials,
     };
     save_oauth_tokens(server_name, &stored)?;
