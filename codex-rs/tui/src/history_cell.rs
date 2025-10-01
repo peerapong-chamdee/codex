@@ -32,7 +32,6 @@ use image::DynamicImage;
 use image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
 use mcp_types::ResourceLink;
-use pathdiff::diff_paths;
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
