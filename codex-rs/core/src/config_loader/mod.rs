@@ -93,7 +93,7 @@ fn read_config_from_path(path: &Path, log_missing_as_info: bool) -> io::Result<O
 
 #[cfg(target_os = "macos")]
 fn load_managed_admin_config_layer() -> io::Result<Option<TomlValue>> {
-    match std::panic::catch_unwind(|| load_managed_admin_config()) {
+    match std::panic::catch_unwind(load_managed_admin_config) {
         Ok(result) => result,
         Err(panic) => {
             let panic_ref: &(dyn std::any::Any + Send) = panic.as_ref();
