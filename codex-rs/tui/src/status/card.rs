@@ -152,7 +152,7 @@ impl StatusHistoryCell {
             Span::from(format!("{percent}% left")),
             Span::from(" (").dim(),
             Span::from(used_fmt).dim(),
-            Span::from(" / ").dim(),
+            Span::from(" used / ").dim(),
             Span::from(window_fmt).dim(),
             Span::from(")").dim(),
         ])
