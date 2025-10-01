@@ -35,7 +35,7 @@ use tracing::warn;
 
 use crate::load_oauth_tokens;
 use crate::logging_client_handler::LoggingClientHandler;
-use crate::oauth::OAuthRuntime;
+use crate::oauth::OAuthPersistor;
 use crate::oauth::StoredOAuthTokens;
 use crate::utils::convert_call_tool_result;
 use crate::utils::convert_to_mcp;
@@ -50,7 +50,7 @@ enum PendingTransport {
     },
     StreamableHttpWithOAuth {
         transport: StreamableHttpClientTransport<AuthClient<reqwest::Client>>,
-        oauth_runtime: OAuthRuntime,
+        oauth_persistor: OAuthPersistor,
     },
 }
 
@@ -60,7 +60,7 @@ enum ClientState {
     },
     Ready {
         service: Arc<RunningService<RoleClient, LoggingClientHandler>>,
-        oauth: Option<OAuthRuntime>,
+        oauth: Option<OAuthPersistor>,
     },
 }
 
@@ -128,11 +128,11 @@ impl RmcpClient {
             }
         };
         let transport = if let Some(initial_tokens) = initial_tokens.clone() {
-            let (transport, oauth_runtime) =
+            let (transport, oauth_persistor) =
                 create_oauth_transport_and_runtime(server_name, url, initial_tokens).await?;
             PendingTransport::StreamableHttpWithOAuth {
                 transport,
-                oauth_runtime,
+                oauth_persistor,
             }
         } else {
             let mut http_config = StreamableHttpClientTransportConfig::with_uri(url.to_string());
@@ -160,7 +160,7 @@ impl RmcpClient {
         let rmcp_params: InitializeRequestParam = convert_to_rmcp(params.clone())?;
         let client_handler = LoggingClientHandler::new(rmcp_params);
 
-        let (transport, oauth_runtime) = {
+        let (transport, oauth_persistor) = {
             let mut guard = self.state.lock().await;
             match &mut *guard {
                 ClientState::Connecting { transport } => match transport.take() {
@@ -174,10 +174,10 @@ impl RmcpClient {
                     ),
                     Some(PendingTransport::StreamableHttpWithOAuth {
                         transport,
-                        oauth_runtime,
+                        oauth_persistor,
                     }) => (
                         service::serve_client(client_handler.clone(), transport).boxed(),
-                        Some(oauth_runtime),
+                        Some(oauth_persistor),
                     ),
                     None => return Err(anyhow!("client already initializing")),
                 },
@@ -205,11 +205,11 @@ impl RmcpClient {
             let mut guard = self.state.lock().await;
             *guard = ClientState::Ready {
                 service: Arc::new(service),
-                oauth: oauth_runtime.clone(),
+                oauth: oauth_persistor.clone(),
             };
         }
 
-        if let Some(runtime) = oauth_runtime
+        if let Some(runtime) = oauth_persistor
             && let Err(error) = runtime.persist_if_needed().await
         {
             warn!("failed to persist OAuth tokens after initialize: {error}");
@@ -259,7 +259,7 @@ impl RmcpClient {
         }
     }
 
-    async fn oauth_runtime(&self) -> Option<OAuthRuntime> {
+    async fn oauth_persistor(&self) -> Option<OAuthPersistor> {
         let guard = self.state.lock().await;
         match &*guard {
             ClientState::Ready {
@@ -271,7 +271,7 @@ impl RmcpClient {
     }
 
     async fn persist_oauth_tokens(&self) {
-        if let Some(runtime) = self.oauth_runtime().await
+        if let Some(runtime) = self.oauth_persistor().await
             && let Err(error) = runtime.persist_if_needed().await
         {
             warn!("failed to persist OAuth tokens: {error}");
@@ -285,7 +285,7 @@ async fn create_oauth_transport_and_runtime(
     initial_tokens: StoredOAuthTokens,
 ) -> Result<(
     StreamableHttpClientTransport<AuthClient<reqwest::Client>>,
-    OAuthRuntime,
+    OAuthPersistor,
 )> {
     let http_client = reqwest::Client::builder().build()?;
     let mut oauth_state = OAuthState::new(url.to_string(), Some(http_client.clone())).await?;
@@ -313,7 +313,7 @@ async fn create_oauth_transport_and_runtime(
         StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
 
-    let runtime = OAuthRuntime::new(
+    let runtime = OAuthPersistor::new(
         server_name.to_string(),
         url.to_string(),
         auth_manager,

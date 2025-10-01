@@ -231,7 +231,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
 
     let url = match &server.transport {
         McpServerTransportConfig::StreamableHttp { url, .. } => url.clone(),
-        _ => bail!("OAuth login is only supported for streamable_http transports."),
+        _ => bail!("OAuth login is only supported for streamable HTTP servers."),
     };
 
     perform_oauth_login(&name, &url).await?;

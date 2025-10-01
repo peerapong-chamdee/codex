@@ -211,18 +211,18 @@ fn delete_oauth_tokens_with_store<C: CredentialStore>(
 }
 
 #[derive(Clone)]
-pub(crate) struct OAuthRuntime {
-    inner: Arc<OAuthRuntimeInner>,
+pub(crate) struct OAuthPersistor {
+    inner: Arc<OAuthPersistorInner>,
 }
 
-struct OAuthRuntimeInner {
+struct OAuthPersistorInner {
     server_name: String,
     url: String,
     authorization_manager: Arc<Mutex<AuthorizationManager>>,
     last_credentials: Mutex<Option<StoredOAuthTokens>>,
 }
 
-impl OAuthRuntime {
+impl OAuthPersistor {
     pub(crate) fn new(
         server_name: String,
         url: String,
@@ -230,7 +230,7 @@ impl OAuthRuntime {
         initial_credentials: Option<StoredOAuthTokens>,
     ) -> Self {
         Self {
-            inner: Arc::new(OAuthRuntimeInner {
+            inner: Arc::new(OAuthPersistorInner {
                 server_name,
                 url,
                 authorization_manager: manager,
