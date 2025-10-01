@@ -57,7 +57,8 @@ jobs:
           echo "::endgroup::"
 
   build:
-    needs: tag-check
+    # DO NOT SUBMIT
+    # needs: tag-check
     name: ${{ matrix.runner }} - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
