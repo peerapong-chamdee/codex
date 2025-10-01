@@ -1,9 +1,14 @@
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(target_os = "macos")]
+use std::any::Any;
 use std::fs;
+use std::future::Future;
 use std::io;
 use std::path::Path;
+use std::path::PathBuf;
+use tokio::task;
 use toml::Value as TomlValue;
 
 const CONFIG_TOML_FILE: &str = "config.toml";
@@ -34,12 +39,12 @@ pub(crate) struct LoadedConfigLayers {
 //
 // (*) Only available on macOS via managed device profiles.
 
-pub fn load_config_as_toml(codex_home: &Path) -> io::Result<TomlValue> {
+pub async fn load_config_as_toml_async(codex_home: PathBuf) -> io::Result<TomlValue> {
     let LoadedConfigLayers {
         mut base,
         managed_config,
         managed_preferences,
-    } = load_config_layers(codex_home)?;
+    } = load_config_layers_async(codex_home).await?;
 
     for overlay in [managed_config, managed_preferences].into_iter().flatten() {
         merge_toml_values(&mut base, &overlay);
@@ -48,13 +53,17 @@ pub fn load_config_as_toml(codex_home: &Path) -> io::Result<TomlValue> {
     Ok(base)
 }
 
-pub(crate) fn load_config_layers(codex_home: &Path) -> io::Result<LoadedConfigLayers> {
-    let user_config_path = codex_home.join(CONFIG_TOML_FILE);
-    let managed_config_path = codex_home.join(MANAGED_CONFIG_TOML_FILE);
+pub fn load_config_as_toml(codex_home: &Path) -> io::Result<TomlValue> {
+    block_on_config_future(load_config_as_toml_async(codex_home.to_path_buf()))
+}
 
-    let user_config = read_config_from_path(&user_config_path, true)?;
-    let managed_config = read_config_from_path(&managed_config_path, false)?;
-    let managed_preferences = load_managed_admin_config_layer()?;
+pub(crate) async fn load_config_layers_async(
+    codex_home: PathBuf,
+) -> io::Result<LoadedConfigLayers> {
+    let user_config = read_config_from_path_async(codex_home.join(CONFIG_TOML_FILE), true).await?;
+    let managed_config =
+        read_config_from_path_async(codex_home.join(MANAGED_CONFIG_TOML_FILE), false).await?;
+    let managed_preferences = load_managed_admin_config_layer_async().await?;
 
     Ok(LoadedConfigLayers {
         base: user_config.unwrap_or_else(default_empty_table),
@@ -63,8 +72,27 @@ pub(crate) fn load_config_layers(codex_home: &Path) -> io::Result<LoadedConfigLa
     })
 }
 
+pub(crate) fn load_config_layers(codex_home: &Path) -> io::Result<LoadedConfigLayers> {
+    block_on_config_future(load_config_layers_async(codex_home.to_path_buf()))
+}
+
 fn default_empty_table() -> TomlValue {
     TomlValue::Table(Default::default())
+}
+
+async fn read_config_from_path_async(
+    path: PathBuf,
+    log_missing_as_info: bool,
+) -> io::Result<Option<TomlValue>> {
+    let path_display = path.clone();
+    task::spawn_blocking(move || read_config_from_path(path.as_path(), log_missing_as_info))
+        .await
+        .map_err(|err| {
+            io::Error::other(format!(
+                "failed to read {} via blocking task: {err}",
+                path_display.display()
+            ))
+        })?
 }
 
 fn read_config_from_path(path: &Path, log_missing_as_info: bool) -> io::Result<Option<TomlValue>> {
@@ -92,29 +120,68 @@ fn read_config_from_path(path: &Path, log_missing_as_info: bool) -> io::Result<O
 }
 
 #[cfg(target_os = "macos")]
-fn load_managed_admin_config_layer() -> io::Result<Option<TomlValue>> {
-    match std::panic::catch_unwind(load_managed_admin_config) {
-        Ok(result) => result,
-        Err(panic) => {
-            let panic_ref: &(dyn std::any::Any + Send) = panic.as_ref();
-            if let Some(&msg) = panic_ref.downcast_ref::<&str>() {
-                tracing::error!("Configuration loader for managed preferences panicked: {msg}");
-            } else if let Some(msg) = panic_ref.downcast_ref::<String>() {
+async fn load_managed_admin_config_layer_async() -> io::Result<Option<TomlValue>> {
+    const LOAD_ERROR: &str = "Failed to load managed preferences configuration";
+
+    let join_result =
+        task::spawn_blocking(|| std::panic::catch_unwind(load_managed_admin_config)).await;
+
+    match join_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(panic)) => {
+            if let Some(msg) = panic_payload_to_string(panic) {
                 tracing::error!("Configuration loader for managed preferences panicked: {msg}");
             } else {
                 tracing::error!("Configuration loader for managed preferences panicked");
             }
 
-            Err(io::Error::other(
-                "Failed to load managed preferences configuration",
-            ))
+            Err(io::Error::other(LOAD_ERROR))
+        }
+        Err(join_err) => {
+            if join_err.is_cancelled() {
+                tracing::error!("Managed preferences load task was cancelled");
+            } else {
+                tracing::error!("Managed preferences load task failed: {join_err}");
+            }
+            Err(io::Error::other(LOAD_ERROR))
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn load_managed_admin_config_layer() -> io::Result<Option<TomlValue>> {
-    load_managed_admin_config()
+async fn load_managed_admin_config_layer_async() -> io::Result<Option<TomlValue>> {
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+fn panic_payload_to_string(panic: Box<dyn Any + Send + 'static>) -> Option<String> {
+    match panic.downcast::<String>() {
+        Ok(message) => Some(*message),
+        Err(panic) => match panic.downcast::<&'static str>() {
+            Ok(message) => Some((*message).to_string()),
+            Err(_) => None,
+        },
+    }
+}
+
+fn block_on_config_future<F, T>(future: F) -> io::Result<T>
+where
+    F: Future<Output = io::Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        task::block_in_place(|| handle.block_on(future))
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| {
+                io::Error::other(format!(
+                    "failed to create runtime for managed preferences loading: {err}"
+                ))
+            })?;
+        runtime.block_on(future)
+    }
 }
 
 //  Merge config `overlay` into `base` config TomlValue, with `overlay` taking precedence.

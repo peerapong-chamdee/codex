@@ -209,6 +209,24 @@ pub struct Config {
 }
 
 impl Config {
+    /// Asynchronous counterpart to [`Config::load_with_cli_overrides`].
+    pub async fn load_with_cli_overrides_async(
+        cli_overrides: Vec<(String, TomlValue)>,
+        overrides: ConfigOverrides,
+    ) -> std::io::Result<Self> {
+        let codex_home = find_codex_home()?;
+
+        let root_value =
+            load_layered_config_with_cli_overrides_async(codex_home.clone(), cli_overrides).await?;
+
+        let cfg: ConfigToml = root_value.try_into().map_err(|e| {
+            tracing::error!("Failed to deserialize overridden config: {e}");
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
+
+        Self::load_from_base_config_with_overrides(cfg, overrides, codex_home)
+    }
+
     /// Load configuration with *generic* CLI overrides (`-c key=value`) applied
     /// **in between** the values parsed from `config.toml` and the
     /// strongly-typed overrides specified via [`ConfigOverrides`].
@@ -254,36 +272,81 @@ pub fn load_config_as_toml_with_cli_overrides(
     Ok(cfg)
 }
 
+pub async fn load_config_as_toml_with_cli_overrides_async(
+    codex_home: &Path,
+    cli_overrides: Vec<(String, TomlValue)>,
+) -> std::io::Result<ConfigToml> {
+    let root_value =
+        load_layered_config_with_cli_overrides_async(codex_home.to_path_buf(), cli_overrides)
+            .await?;
+
+    let cfg: ConfigToml = root_value.try_into().map_err(|e| {
+        tracing::error!("Failed to deserialize overridden config: {e}");
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })?;
+
+    Ok(cfg)
+}
+
 fn load_layered_config_with_cli_overrides(
     codex_home: &Path,
     cli_overrides: Vec<(String, TomlValue)>,
 ) -> std::io::Result<TomlValue> {
-    // Apply CLI overrides immediately so that file-based overrides and managed
-    // preferences still have the opportunity to take precedence over them.
+    let layers = crate::config_loader::load_config_layers(codex_home)?;
+    Ok(finalize_layers_with_overrides(layers, cli_overrides))
+}
+
+async fn load_layered_config_with_cli_overrides_async(
+    codex_home: PathBuf,
+    cli_overrides: Vec<(String, TomlValue)>,
+) -> std::io::Result<TomlValue> {
+    let layers = crate::config_loader::load_config_layers_async(codex_home).await?;
+    Ok(finalize_layers_with_overrides(layers, cli_overrides))
+}
+
+fn finalize_layers_with_overrides(
+    layers: crate::config_loader::LoadedConfigLayers,
+    cli_overrides: Vec<(String, TomlValue)>,
+) -> TomlValue {
     let crate::config_loader::LoadedConfigLayers {
         mut base,
         managed_config,
         managed_preferences,
-    } = crate::config_loader::load_config_layers(codex_home)?;
+    } = layers;
+
     for (path, value) in cli_overrides.into_iter() {
         apply_toml_override(&mut base, &path, value);
     }
 
-    // Overlay filesystem and managed layers in priority order
-    // (config.toml < managed_config.toml < managed preferences).
     for overlay in [managed_config, managed_preferences].into_iter().flatten() {
         crate::config_loader::merge_toml_values(&mut base, &overlay);
     }
 
-    Ok(base)
+    base
 }
 
 pub use crate::config_loader::load_config_as_toml;
+pub use crate::config_loader::load_config_as_toml_async;
 
 pub fn load_global_mcp_servers(
     codex_home: &Path,
 ) -> std::io::Result<BTreeMap<String, McpServerConfig>> {
     let root_value = crate::config_loader::load_config_as_toml(codex_home)?;
+    let Some(servers_value) = root_value.get("mcp_servers") else {
+        return Ok(BTreeMap::new());
+    };
+
+    servers_value
+        .clone()
+        .try_into()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+pub async fn load_global_mcp_servers_async(
+    codex_home: &Path,
+) -> std::io::Result<BTreeMap<String, McpServerConfig>> {
+    let root_value =
+        crate::config_loader::load_config_as_toml_async(codex_home.to_path_buf()).await?;
     let Some(servers_value) = root_value.get("mcp_servers") else {
         return Ok(BTreeMap::new());
     };

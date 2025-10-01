@@ -23,13 +23,14 @@ pub async fn run_apply_command(
     apply_cli: ApplyCommand,
     cwd: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let config = Config::load_with_cli_overrides(
+    let config = Config::load_with_cli_overrides_async(
         apply_cli
             .config_overrides
             .parse_overrides()
             .map_err(anyhow::Error::msg)?,
         ConfigOverrides::default(),
-    )?;
+    )
+    .await?;
 
     init_chatgpt_token_from_auth(&config.codex_home).await?;
 

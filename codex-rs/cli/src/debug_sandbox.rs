@@ -64,7 +64,7 @@ async fn run_command_under_sandbox(
     sandbox_type: SandboxType,
 ) -> anyhow::Result<()> {
     let sandbox_mode = create_sandbox_mode(full_auto);
-    let config = Config::load_with_cli_overrides(
+    let config = Config::load_with_cli_overrides_async(
         config_overrides
             .parse_overrides()
             .map_err(anyhow::Error::msg)?,
@@ -73,7 +73,8 @@ async fn run_command_under_sandbox(
             codex_linux_sandbox_exe,
             ..Default::default()
         },
-    )?;
+    )
+    .await?;
 
     // In practice, this should be `std::env::current_dir()` because this CLI
     // does not support `--cwd`, but let's use the config value for consistency.

@@ -35,7 +35,8 @@ pub async fn run_main(opts: ProtoCli) -> anyhow::Result<()> {
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
 
-    let config = Config::load_with_cli_overrides(overrides_vec, ConfigOverrides::default())?;
+    let config =
+        Config::load_with_cli_overrides_async(overrides_vec, ConfigOverrides::default()).await?;
     // Use conversation_manager API to start a conversation
     let conversation_manager =
         ConversationManager::new(AuthManager::shared(config.codex_home.clone()));
