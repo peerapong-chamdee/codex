@@ -1,5 +1,5 @@
+use codex_app_server_protocol::AuthMode;
 use codex_core::protocol_config_types::ReasoningEffort;
-use codex_protocol::mcp_protocol::AuthMode;
 
 /// A simple preset pairing a model slug with a reasoning effort.
 #[derive(Debug, Clone, Copy)]
@@ -29,7 +29,7 @@ const PRESETS: &[ModelPreset] = &[
         label: "gpt-5-codex medium",
         description: "Dynamically adjusts reasoning based on the task",
         model: "gpt-5-codex",
-        effort: None,
+        effort: Some(ReasoningEffort::Medium),
     },
     ModelPreset {
         id: "gpt-5-codex-high",

@@ -16,6 +16,7 @@ use codex_core::shell::Shell;
 use codex_core::shell::default_user_shell;
 use core_test_support::load_default_config_for_test;
 use core_test_support::load_sse_fixture_with_id;
+use core_test_support::skip_if_no_network;
 use core_test_support::wait_for_event;
 use tempfile::TempDir;
 use wiremock::Mock;
@@ -67,6 +68,7 @@ fn assert_tool_names(body: &serde_json::Value, expected_names: &[&str]) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn codex_mini_latest_tools() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -151,6 +153,7 @@ async fn codex_mini_latest_tools() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn prompt_tools_are_consistent_across_requests() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -234,6 +237,7 @@ async fn prompt_tools_are_consistent_across_requests() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prefixes_context_and_instructions_once_and_consistently_across_requests() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -352,6 +356,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -479,6 +484,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -546,6 +552,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
             model: "o3".to_string(),
             effort: Some(ReasoningEffort::High),
             summary: ReasoningSummary::Detailed,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -601,6 +608,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -655,6 +663,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
             model: default_model.clone(),
             effort: default_effort,
             summary: default_summary,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -671,6 +680,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
             model: default_model.clone(),
             effort: default_effort,
             summary: default_summary,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -712,6 +722,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_user_turn_with_changes_sends_environment_context() {
+    skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
     let server = MockServer::start().await;
@@ -766,6 +777,7 @@ async fn send_user_turn_with_changes_sends_environment_context() {
             model: default_model,
             effort: default_effort,
             summary: default_summary,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -782,6 +794,7 @@ async fn send_user_turn_with_changes_sends_environment_context() {
             model: "o3".to_string(),
             effort: Some(ReasoningEffort::High),
             summary: ReasoningSummary::Detailed,
+            final_output_json_schema: None,
         })
         .await
         .unwrap();

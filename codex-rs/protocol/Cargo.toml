@@ -31,7 +31,7 @@ ts-rs = { workspace = true, features = [
 uuid = { workspace = true, features = ["serde", "v7"] }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
+anyhow = { workspace = true }
 tempfile = { workspace = true }
 
 [package.metadata.cargo-shear]
