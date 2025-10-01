@@ -170,9 +170,14 @@ jobs:
             exit 1
           fi
 
+          keychain_args=()
+          if [[ -n "${APPLE_CODESIGN_KEYCHAIN:-}" && -f "${APPLE_CODESIGN_KEYCHAIN}" ]]; then
+            keychain_args+=(--keychain "${APPLE_CODESIGN_KEYCHAIN}")
+          fi
+
           for binary in codex codex-responses-api-proxy; do
             path="target/${{ matrix.target }}/release/${binary}"
-            codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "$path"
+            codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "${keychain_args[@]}" "$path"
             codesign --verify --deep --strict "$path"
           done
 
