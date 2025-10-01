@@ -206,11 +206,6 @@ fn load_managed_admin_config() -> io::Result<Option<TomlValue>> {
     macos::load_managed_admin_config()
 }
 
-#[cfg(not(target_os = "macos"))]
-fn load_managed_admin_config() -> io::Result<Option<TomlValue>> {
-    Ok(None)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
