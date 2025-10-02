@@ -302,7 +302,10 @@ impl HistoryCell for StatusHistoryCell {
         }
 
         lines.push(Line::from(Vec::<Span<'static>>::new()));
-        lines.push(formatter.line("Token usage", self.token_usage_spans()));
+        // Only show token usage when using an API key
+        if matches!(self.account, Some(StatusAccountDisplay::ApiKey)) {
+            lines.push(formatter.line("Token usage", self.token_usage_spans()));
+        }
 
         if let Some(spans) = self.context_window_spans() {
             lines.push(formatter.line("Context window", spans));
