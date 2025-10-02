@@ -63,6 +63,7 @@ const KEY_UP: KeyBinding = key_hint::plain(KeyCode::Up);
 const KEY_DOWN: KeyBinding = key_hint::plain(KeyCode::Down);
 const KEY_PAGE_UP: KeyBinding = key_hint::plain(KeyCode::PageUp);
 const KEY_PAGE_DOWN: KeyBinding = key_hint::plain(KeyCode::PageDown);
+const KEY_SPACE: KeyBinding = key_hint::plain(KeyCode::Char(' '));
 const KEY_HOME: KeyBinding = key_hint::plain(KeyCode::Home);
 const KEY_END: KeyBinding = key_hint::plain(KeyCode::End);
 const KEY_Q: KeyBinding = key_hint::plain(KeyCode::Char('q'));
@@ -238,7 +239,7 @@ impl PagerView {
                 let area = self.content_area(tui.terminal.viewport_area);
                 self.scroll_offset = self.scroll_offset.saturating_sub(area.height as usize);
             }
-            e if KEY_PAGE_DOWN.is_press(e) => {
+            e if KEY_PAGE_DOWN.is_press(e) || KEY_SPACE.is_press(e) => {
                 let area = self.content_area(tui.terminal.viewport_area);
                 self.scroll_offset = self.scroll_offset.saturating_add(area.height as usize);
             }
