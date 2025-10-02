@@ -156,6 +156,11 @@ jobs:
           security import "$cert_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$keychain_path"
 
+          echo "::group::Imported signing identities"
+          security find-identity -v -p codesigning "$keychain_path" || true
+          security find-certificate -a -Z "$keychain_path" || true
+          echo "::endgroup::"
+
           rm -f "$cert_path"
 
           echo "APPLE_CODESIGN_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
@@ -174,11 +179,20 @@ jobs:
           keychain_args=()
           if [[ -n "${APPLE_CODESIGN_KEYCHAIN:-}" && -f "${APPLE_CODESIGN_KEYCHAIN}" ]]; then
             keychain_args+=(--keychain "${APPLE_CODESIGN_KEYCHAIN}")
+            echo "::group::Signing keychain diagnostics"
+            security find-identity -v -p codesigning "${APPLE_CODESIGN_KEYCHAIN}" || true
+            security find-certificate -a -Z "${APPLE_CODESIGN_KEYCHAIN}" || true
+            echo "::endgroup::"
           fi
 
           for binary in codex codex-responses-api-proxy; do
             path="target/${{ matrix.target }}/release/${binary}"
-            codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "${keychain_args[@]}" "$path"
+            if [[ "${CODESIGN_TEST:-}" == "true" ]]; then
+              echo "Ad-hoc signing $path (test mode)"
+              codesign --force --sign - "$path"
+            else
+              codesign --force --options runtime --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "${keychain_args[@]}" "$path"
+            fi
             codesign --verify --deep --strict "$path"
           done
 
