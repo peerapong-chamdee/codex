@@ -302,8 +302,8 @@ impl HistoryCell for StatusHistoryCell {
         }
 
         lines.push(Line::from(Vec::<Span<'static>>::new()));
-        // Only show token usage when using an API key
-        if matches!(self.account, Some(StatusAccountDisplay::ApiKey)) {
+        // Hide token usage only for ChatGPT subscribers
+        if !matches!(self.account, Some(StatusAccountDisplay::ChatGpt { .. })) {
             lines.push(formatter.line("Token usage", self.token_usage_spans()));
         }
 
