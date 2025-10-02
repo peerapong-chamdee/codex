@@ -317,10 +317,14 @@ fn finalize_layers_with_overrides(
         managed_preferences,
     } = layers;
 
+    // CLI overrides sit directly on top of the base user config before we apply
+    // any machine-managed layers.
     for (path, value) in cli_overrides.into_iter() {
         apply_toml_override(&mut base, &path, value);
     }
 
+    // Managed configuration comes after CLI overrides, with managed
+    // preferences (MDM) as the highest-precedence layer.
     for overlay in [managed_config, managed_preferences].into_iter().flatten() {
         crate::config_loader::merge_toml_values(&mut base, &overlay);
     }
@@ -1286,6 +1290,8 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
 
+    const MANAGED_CONFIG_PATH_ENV_VAR: &str = "CODEX_MANAGED_CONFIG_PATH";
+
     #[test]
     fn test_toml_parsing() {
         let history_with_persistence = r#"
@@ -1442,23 +1448,23 @@ exclude_slash_tmp = true
     #[test]
     fn managed_config_wins_over_cli_overrides() -> anyhow::Result<()> {
         let codex_home = TempDir::new()?;
+        let managed_path = codex_home.path().join("managed_config.toml");
 
-        std::fs::write(
-            codex_home.path().join(CONFIG_TOML_FILE),
-            "model = \"base\"\n",
-        )?;
-        std::fs::write(
-            codex_home.path().join("managed_config.toml"),
-            "model = \"managed_config\"\n",
-        )?;
+        with_managed_config_env_override(&managed_path, || {
+            std::fs::write(
+                codex_home.path().join(CONFIG_TOML_FILE),
+                "model = \"base\"\n",
+            )?;
+            std::fs::write(&managed_path, "model = \"managed_config\"\n")?;
 
-        let cfg = load_config_as_toml_with_cli_overrides(
-            codex_home.path(),
-            vec![("model".to_string(), TomlValue::String("cli".to_string()))],
-        )?;
+            let cfg = load_config_as_toml_with_cli_overrides(
+                codex_home.path(),
+                vec![("model".to_string(), TomlValue::String("cli".to_string()))],
+            )?;
 
-        assert_eq!(cfg.model.as_deref(), Some("managed_config"));
-        Ok(())
+            assert_eq!(cfg.model.as_deref(), Some("managed_config"));
+            anyhow::Ok(())
+        })
     }
 
     #[test]
@@ -1535,6 +1541,21 @@ ZIG_VAR = "3"
         }
 
         Ok(())
+    }
+
+    fn with_managed_config_env_override<R>(path: &std::path::Path, f: impl FnOnce() -> R) -> R {
+        use scopeguard::guard;
+
+        let previous = std::env::var(MANAGED_CONFIG_PATH_ENV_VAR).ok();
+        // Ensure the managed-config override never leaks past this test.
+        let _restore = guard(previous, |prev| match prev {
+            Some(value) => unsafe { std::env::set_var(MANAGED_CONFIG_PATH_ENV_VAR, value) },
+            None => unsafe { std::env::remove_var(MANAGED_CONFIG_PATH_ENV_VAR) },
+        });
+
+        unsafe { std::env::set_var(MANAGED_CONFIG_PATH_ENV_VAR, path) };
+
+        f()
     }
 
     #[test]
