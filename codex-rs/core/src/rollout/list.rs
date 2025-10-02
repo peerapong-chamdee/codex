@@ -92,6 +92,7 @@ pub(crate) async fn get_conversations(
     codex_home: &Path,
     page_size: usize,
     cursor: Option<&Cursor>,
+    interactive_only: bool,
 ) -> io::Result<ConversationsPage> {
     let mut root = codex_home.to_path_buf();
     root.push(SESSIONS_SUBDIR);
@@ -107,7 +108,8 @@ pub(crate) async fn get_conversations(
 
     let anchor = cursor.cloned();
 
-    let result = traverse_directories_for_paths(root.clone(), page_size, anchor).await?;
+    let result =
+        traverse_directories_for_paths(root.clone(), page_size, anchor, interactive_only).await?;
     Ok(result)
 }
 
@@ -126,6 +128,7 @@ async fn traverse_directories_for_paths(
     root: PathBuf,
     page_size: usize,
     anchor: Option<Cursor>,
+    interactive_only: bool,
 ) -> io::Result<ConversationsPage> {
     let mut items: Vec<ConversationItem> = Vec::with_capacity(page_size);
     let mut scanned_files = 0usize;
@@ -179,10 +182,14 @@ async fn traverse_directories_for_paths(
                     }
                     // Read head and simultaneously detect message events within the same
                     // first N JSONL records to avoid a second file read.
-                    let (head, tail, saw_session_meta, saw_user_event) =
+                    let (head, tail, saw_session_meta, saw_user_event, saw_interactive) =
                         read_head_and_tail(&path, HEAD_RECORD_LIMIT, TAIL_RECORD_LIMIT)
                             .await
-                            .unwrap_or((Vec::new(), Vec::new(), false, false));
+                            .unwrap_or((Vec::new(), Vec::new(), false, false, false));
+                    if interactive_only && !saw_interactive {
+                        continue;
+                    }
+
                     // Apply filters: must have session meta and at least one user message event
                     if saw_session_meta && saw_user_event {
                         items.push(ConversationItem { path, head, tail });
@@ -293,7 +300,13 @@ async fn read_head_and_tail(
     path: &Path,
     head_limit: usize,
     tail_limit: usize,
-) -> io::Result<(Vec<serde_json::Value>, Vec<serde_json::Value>, bool, bool)> {
+) -> io::Result<(
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+    bool,
+    bool,
+    bool,
+)> {
     use tokio::io::AsyncBufReadExt;
 
     let file = tokio::fs::File::open(path).await?;
@@ -302,6 +315,7 @@ async fn read_head_and_tail(
     let mut head: Vec<serde_json::Value> = Vec::new();
     let mut saw_session_meta = false;
     let mut saw_user_event = false;
+    let mut saw_interactive = false;
 
     while head.len() < head_limit {
         let line_opt = lines.next_line().await?;
@@ -316,6 +330,7 @@ async fn read_head_and_tail(
 
         match rollout_line.item {
             RolloutItem::SessionMeta(session_meta_line) => {
+                saw_interactive = session_meta_line.meta.interactive.unwrap_or(true);
                 if let Ok(val) = serde_json::to_value(session_meta_line) {
                     head.push(val);
                     saw_session_meta = true;
@@ -346,7 +361,13 @@ async fn read_head_and_tail(
         read_tail_records(path, tail_limit).await?
     };
 
-    Ok((head, tail, saw_session_meta, saw_user_event))
+    Ok((
+        head,
+        tail,
+        saw_session_meta,
+        saw_user_event,
+        saw_interactive,
+    ))
 }
 
 async fn read_tail_records(path: &Path, max_records: usize) -> io::Result<Vec<serde_json::Value>> {

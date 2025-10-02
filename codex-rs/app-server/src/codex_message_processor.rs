@@ -693,6 +693,7 @@ impl CodexMessageProcessor {
             &self.config.codex_home,
             page_size,
             cursor_ref,
+            false,
         )
         .await
         {

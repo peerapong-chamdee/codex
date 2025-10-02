@@ -176,6 +176,7 @@ impl Codex {
         config: Config,
         auth_manager: Arc<AuthManager>,
         conversation_history: InitialHistory,
+        interactive: bool,
     ) -> CodexResult<CodexSpawnOk> {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
@@ -204,6 +205,7 @@ impl Codex {
             auth_manager.clone(),
             tx_event.clone(),
             conversation_history,
+            interactive,
         )
         .await
         .map_err(|e| {
@@ -338,6 +340,7 @@ impl Session {
         auth_manager: Arc<AuthManager>,
         tx_event: Sender<Event>,
         initial_history: InitialHistory,
+        interactive: bool,
     ) -> anyhow::Result<(Arc<Self>, TurnContext)> {
         let ConfigureSession {
             provider,
@@ -361,7 +364,11 @@ impl Session {
                 let conversation_id = ConversationId::default();
                 (
                     conversation_id,
-                    RolloutRecorderParams::new(conversation_id, user_instructions.clone()),
+                    RolloutRecorderParams::new(
+                        conversation_id,
+                        user_instructions.clone(),
+                        interactive,
+                    ),
                 )
             }
             InitialHistory::Resumed(resumed_history) => (

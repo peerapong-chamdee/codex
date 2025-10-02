@@ -393,7 +393,7 @@ async fn run_ratatui_app(
             }
         }
     } else if cli.resume_last {
-        match RolloutRecorder::list_conversations(&config.codex_home, 1, None).await {
+        match RolloutRecorder::list_conversations(&config.codex_home, 1, None, true).await {
             Ok(page) => page
                 .items
                 .first()

@@ -53,6 +53,7 @@ pub enum RolloutRecorderParams {
     Create {
         conversation_id: ConversationId,
         instructions: Option<String>,
+        interactive: bool,
     },
     Resume {
         path: PathBuf,
@@ -71,10 +72,15 @@ enum RolloutCmd {
 }
 
 impl RolloutRecorderParams {
-    pub fn new(conversation_id: ConversationId, instructions: Option<String>) -> Self {
+    pub fn new(
+        conversation_id: ConversationId,
+        instructions: Option<String>,
+        interactive: bool,
+    ) -> Self {
         Self::Create {
             conversation_id,
             instructions,
+            interactive,
         }
     }
 
@@ -89,8 +95,9 @@ impl RolloutRecorder {
         codex_home: &Path,
         page_size: usize,
         cursor: Option<&Cursor>,
+        interactive_only: bool,
     ) -> std::io::Result<ConversationsPage> {
-        get_conversations(codex_home, page_size, cursor).await
+        get_conversations(codex_home, page_size, cursor, interactive_only).await
     }
 
     /// Attempt to create a new [`RolloutRecorder`]. If the sessions directory
@@ -101,6 +108,7 @@ impl RolloutRecorder {
             RolloutRecorderParams::Create {
                 conversation_id,
                 instructions,
+                interactive,
             } => {
                 let LogFileInfo {
                     file,
@@ -127,6 +135,7 @@ impl RolloutRecorder {
                         originator: originator().value.clone(),
                         cli_version: env!("CARGO_PKG_VERSION").to_string(),
                         instructions,
+                        interactive: Some(interactive),
                     }),
                 )
             }

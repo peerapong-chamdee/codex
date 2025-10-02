@@ -249,7 +249,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     }
 
     let conversation_manager =
-        ConversationManager::new(AuthManager::shared(config.codex_home.clone()));
+        ConversationManager::new(AuthManager::shared(config.codex_home.clone()), false);
 
     // Handle resume subcommand by resolving a rollout path and using explicit resume API.
     let NewConversation {
@@ -391,7 +391,9 @@ async fn resolve_resume_path(
     args: &crate::cli::ResumeArgs,
 ) -> anyhow::Result<Option<PathBuf>> {
     if args.last {
-        match codex_core::RolloutRecorder::list_conversations(&config.codex_home, 1, None).await {
+        match codex_core::RolloutRecorder::list_conversations(&config.codex_home, 1, None, false)
+            .await
+        {
             Ok(page) => Ok(page.items.first().map(|it| it.path.clone())),
             Err(e) => {
                 error!("Error listing conversations: {e}");

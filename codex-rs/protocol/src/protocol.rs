@@ -924,6 +924,7 @@ pub struct SessionMeta {
     pub originator: String,
     pub cli_version: String,
     pub instructions: Option<String>,
+    pub interactive: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]

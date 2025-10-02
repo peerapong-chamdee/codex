@@ -538,7 +538,7 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
         Ok(None) => panic!("No CodexAuth found in codex_home"),
         Err(e) => panic!("Failed to load CodexAuth: {e}"),
     };
-    let conversation_manager = ConversationManager::new(auth_manager);
+    let conversation_manager = ConversationManager::new(auth_manager, false);
     let NewConversation {
         conversation: codex,
         ..

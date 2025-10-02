@@ -53,7 +53,7 @@ impl MessageProcessor {
     ) -> Self {
         let outgoing = Arc::new(outgoing);
         let auth_manager = AuthManager::shared(config.codex_home.clone());
-        let conversation_manager = Arc::new(ConversationManager::new(auth_manager));
+        let conversation_manager = Arc::new(ConversationManager::new(auth_manager, false));
         Self {
             outgoing,
             initialized: false,

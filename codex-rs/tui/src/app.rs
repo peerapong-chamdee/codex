@@ -82,7 +82,7 @@ impl App {
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
 
-        let conversation_manager = Arc::new(ConversationManager::new(auth_manager.clone()));
+        let conversation_manager = Arc::new(ConversationManager::new(auth_manager.clone(), true));
 
         let enhanced_keys_supported = tui.enhanced_keys_supported();
 
