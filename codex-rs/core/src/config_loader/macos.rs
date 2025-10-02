@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use core_foundation::base::TCFType;
