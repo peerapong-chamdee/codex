@@ -1,4 +1,3 @@
-#[cfg(target_os = "macos")]
 mod macos;
 
 use std::env;
@@ -179,10 +178,11 @@ fn load_managed_admin_config() -> io::Result<Option<TomlValue>> {
 /// Determine the managed-config layer location. Tests and custom installs can
 /// override the default system path with `CODEX_MANAGED_CONFIG_PATH`.
 fn managed_config_path(codex_home: &Path) -> PathBuf {
-    if let Ok(path) = env::var(MANAGED_CONFIG_PATH_ENV_VAR) {
-        if !path.is_empty() {
-            return PathBuf::from(path);
-        }
+    if let Some(path) = env::var(MANAGED_CONFIG_PATH_ENV_VAR)
+        .ok()
+        .filter(|path| !path.is_empty())
+    {
+        return PathBuf::from(path);
     }
 
     #[cfg(unix)]
